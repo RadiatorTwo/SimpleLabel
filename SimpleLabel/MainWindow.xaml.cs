@@ -159,7 +159,41 @@ public partial class MainWindow : Window
                 // Enable and populate text formatting controls
                 propertyText.Text = textBlock.Text;
                 propertyFontFamily.SelectedItem = textBlock.FontFamily.Source;
-                propertyFontSize.Text = textBlock.FontSize.ToString();
+
+                // Find the closest matching font size item
+                double currentFontSize = textBlock.FontSize;
+                ComboBoxItem? bestMatch = null;
+                double smallestDifference = double.MaxValue;
+
+                foreach (var item in propertyFontSize.Items)
+                {
+                    if (item is ComboBoxItem cbi && cbi.Tag != null)
+                    {
+                        if (double.TryParse(cbi.Tag.ToString(), out double fontSize))
+                        {
+                            double difference = Math.Abs(fontSize - currentFontSize);
+                            if (difference < smallestDifference)
+                            {
+                                smallestDifference = difference;
+                                bestMatch = cbi;
+                            }
+                        }
+                    }
+                }
+
+                if (bestMatch != null && smallestDifference < 0.5)
+                {
+                    propertyFontSize.SelectedItem = bestMatch;
+                }
+                else
+                {
+                    // No close match, calculate and show mm equivalent
+                    // Approximate actual character height: pt * 0.265 ≈ mm
+                    // (accounts for cap height being ~70% of font size)
+                    double mm = currentFontSize * 0.265;
+                    propertyFontSize.SelectedItem = null;
+                    propertyFontSize.Text = $"{mm:F0}mm ({currentFontSize:F0}pt)";
+                }
 
                 // Get foreground color and set preview
                 if (textBlock.Foreground is SolidColorBrush brush)
@@ -404,7 +438,7 @@ public partial class MainWindow : Window
         var textBlock = new TextBlock
         {
             Text = text,
-            FontSize = 36,
+            FontSize = 38,  // ~10mm character height
             Foreground = Brushes.Black,
             FontFamily = new FontFamily("Arial"),
             TextAlignment = TextAlignment.Left,
@@ -919,9 +953,17 @@ public partial class MainWindow : Window
             Duplicate_Click(this, new RoutedEventArgs());
             e.Handled = true;
         }
-        // Handle Delete key
+        // Handle Delete key - but only if focus is not in a text input control
         else if (e.Key == Key.Delete)
         {
+            // Check if focus is in a TextBox or other text input control
+            var focusedElement = Keyboard.FocusedElement as DependencyObject;
+            if (focusedElement is TextBox || focusedElement is ComboBox)
+            {
+                // Let the text control handle the delete key
+                return;
+            }
+
             Delete_Click(this, new RoutedEventArgs());
             e.Handled = true;
         }
@@ -943,9 +985,17 @@ public partial class MainWindow : Window
             SnapToGrid_Click(this, new RoutedEventArgs());
             e.Handled = true;
         }
-        // Handle Arrow keys for precise movement
+        // Handle Arrow keys for precise movement - but only if focus is not in a text input control
         else if (e.Key == Key.Left || e.Key == Key.Right || e.Key == Key.Up || e.Key == Key.Down)
         {
+            // Check if focus is in a TextBox or other text input control
+            var focusedElement = Keyboard.FocusedElement as DependencyObject;
+            if (focusedElement is TextBox || focusedElement is ComboBox)
+            {
+                // Let the text control handle the arrow keys
+                return;
+            }
+
             if (selectedElement != null)
             {
                 // If snap to grid is enabled, use grid size as step (in mm, convert to pixels)
@@ -1531,6 +1581,16 @@ public partial class MainWindow : Window
                     }
                 }
             }
+            else
+            {
+                // SelectedItem is null, use the current Text value
+                initialStringValue = comboBox.Text;
+                // For font size combo box, also store as numeric value
+                if (comboBox.Name == "propertyFontSize" && double.TryParse(comboBox.Text, out double fontSize))
+                {
+                    initialPropertyValue = fontSize;
+                }
+            }
         }
         else if (sender is Slider slider)
         {
@@ -1737,6 +1797,16 @@ public partial class MainWindow : Window
         }
     }
 
+    private void PropertyText_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter && sender is TextBox textBox)
+        {
+            // Trigger the LostFocus logic by moving focus away
+            textBox.MoveFocus(new TraversalRequest(FocusNavigationDirection.Next));
+            e.Handled = true;
+        }
+    }
+
     private void PropertyFontFamily_LostFocus(object sender, RoutedEventArgs e)
     {
         if (selectedElement is not TextBlock textBlock || sender is not ComboBox comboBox)
@@ -1759,21 +1829,51 @@ public partial class MainWindow : Window
         }
     }
 
+    private void PropertyFontSize_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (selectedElement is not TextBlock textBlock || sender is not ComboBox comboBox)
+            return;
+
+        // Get the font size from the selected item's Tag
+        if (comboBox.SelectedItem is ComboBoxItem item && item.Tag != null)
+        {
+            if (double.TryParse(item.Tag.ToString(), out double newValue))
+            {
+                double oldValue = textBlock.FontSize;
+
+                if (Math.Abs(newValue - oldValue) > 0.01)
+                {
+                    // Value changed - create command
+                    textBlock.FontSize = oldValue;
+                    commandManager.ExecuteCommand(new ChangeTextPropertyCommand(textBlock, "FontSize", oldValue, newValue));
+                    UpdateUndoRedoButtons();
+                    UpdatePropertiesPanel();
+                    isDirty = true;
+                }
+            }
+        }
+    }
+
     private void PropertyFontSize_LostFocus(object sender, RoutedEventArgs e)
     {
         if (selectedElement is not TextBlock textBlock || sender is not ComboBox comboBox)
             return;
 
-        // Try to parse the text (could be from ComboBoxItem or direct text input)
+        // Handle manual text input (when user types directly)
         string text = comboBox.Text;
+
+        // Try to parse as direct pt value
         if (!double.TryParse(text, out double newValue))
             return;
 
-        if (Math.Abs(newValue - initialPropertyValue) > 0.01)
+        // If initialPropertyValue is invalid (0 or negative), use the current FontSize
+        double oldValue = initialPropertyValue > 0 ? initialPropertyValue : textBlock.FontSize;
+
+        if (Math.Abs(newValue - oldValue) > 0.01)
         {
             // Value changed - create command
-            textBlock.FontSize = initialPropertyValue;
-            commandManager.ExecuteCommand(new ChangeTextPropertyCommand(textBlock, "FontSize", initialPropertyValue, newValue));
+            textBlock.FontSize = oldValue;
+            commandManager.ExecuteCommand(new ChangeTextPropertyCommand(textBlock, "FontSize", oldValue, newValue));
             UpdateUndoRedoButtons();
             UpdatePropertiesPanel();
             isDirty = true;

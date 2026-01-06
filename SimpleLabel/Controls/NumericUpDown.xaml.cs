@@ -84,6 +84,24 @@ public partial class NumericUpDown : UserControl
 
     private void TextBox_LostFocus(object sender, RoutedEventArgs e)
     {
+        ValidateAndUpdateValue();
+        LostFocus?.Invoke(this, e);
+    }
+
+    private void TextBox_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        // Handle Enter key to confirm input
+        if (e.Key == System.Windows.Input.Key.Enter)
+        {
+            ValidateAndUpdateValue();
+            // Move focus away from textbox to trigger LostFocus on parent
+            textBox.MoveFocus(new System.Windows.Input.TraversalRequest(System.Windows.Input.FocusNavigationDirection.Next));
+            e.Handled = true;
+        }
+    }
+
+    private void ValidateAndUpdateValue()
+    {
         if (double.TryParse(textBox.Text, out double value))
         {
             Value = Math.Clamp(value, Minimum, Maximum);
@@ -91,15 +109,6 @@ public partial class NumericUpDown : UserControl
         else
         {
             UpdateTextBox();
-        }
-        LostFocus?.Invoke(this, e);
-    }
-
-    private void TextBox_TextChanged(object sender, TextChangedEventArgs e)
-    {
-        if (!isUpdatingText && double.TryParse(textBox.Text, out double value))
-        {
-            Value = Math.Clamp(value, Minimum, Maximum);
         }
     }
 

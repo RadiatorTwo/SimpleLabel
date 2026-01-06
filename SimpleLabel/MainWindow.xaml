@@ -161,6 +161,7 @@
                             <TextBox x:Name="propertyText"
                                      GotFocus="Property_GotFocus"
                                      LostFocus="PropertyText_LostFocus"
+                                     PreviewKeyDown="PropertyText_PreviewKeyDown"
                                      IsEnabled="False"
                                      IsUndoEnabled="False" />
 
@@ -170,28 +171,38 @@
                                       LostFocus="PropertyFontFamily_LostFocus"
                                       IsEnabled="False" />
 
-                            <Label Content="Schriftgröße:" Margin="0,10,0,2" />
+                            <Label Content="Schriftgröße (ca. Höhe):" Margin="0,10,0,2" />
                             <ComboBox x:Name="propertyFontSize"
                                       GotFocus="Property_GotFocus"
                                       LostFocus="PropertyFontSize_LostFocus"
+                                      SelectionChanged="PropertyFontSize_Changed"
                                       IsEnabled="False"
                                       IsEditable="True">
-                                <ComboBoxItem Content="8" />
-                                <ComboBoxItem Content="9" />
-                                <ComboBoxItem Content="10" />
-                                <ComboBoxItem Content="11" />
-                                <ComboBoxItem Content="12" />
-                                <ComboBoxItem Content="14" />
-                                <ComboBoxItem Content="16" />
-                                <ComboBoxItem Content="18" />
-                                <ComboBoxItem Content="20" />
-                                <ComboBoxItem Content="24" />
-                                <ComboBoxItem Content="28" />
-                                <ComboBoxItem Content="32" />
-                                <ComboBoxItem Content="36" />
-                                <ComboBoxItem Content="48" />
-                                <ComboBoxItem Content="60" />
-                                <ComboBoxItem Content="72" />
+                                <ComboBoxItem Content="2mm (8pt)" Tag="8" />
+                                <ComboBoxItem Content="3mm (11pt)" Tag="11" />
+                                <ComboBoxItem Content="4mm (15pt)" Tag="15" />
+                                <ComboBoxItem Content="5mm (19pt)" Tag="19" />
+                                <ComboBoxItem Content="6mm (23pt)" Tag="23" />
+                                <ComboBoxItem Content="7mm (26pt)" Tag="26" />
+                                <ComboBoxItem Content="8mm (30pt)" Tag="30" />
+                                <ComboBoxItem Content="10mm (38pt)" Tag="38" />
+                                <ComboBoxItem Content="12mm (45pt)" Tag="45" />
+                                <ComboBoxItem Content="15mm (57pt)" Tag="57" />
+                                <ComboBoxItem Content="20mm (76pt)" Tag="76" />
+                                <ComboBoxItem Content="25mm (95pt)" Tag="95" />
+                                <ComboBoxItem Content="30mm (113pt)" Tag="113" />
+                                <ComboBoxItem Content="40mm (151pt)" Tag="151" />
+                                <ComboBoxItem Content="50mm (189pt)" Tag="189" />
+                                <ComboBoxItem Content="60mm (227pt)" Tag="227" />
+                                <ComboBoxItem Content="70mm (265pt)" Tag="265" />
+                                <ComboBoxItem Content="80mm (302pt)" Tag="302" />
+                                <ComboBoxItem Content="90mm (340pt)" Tag="340" />
+                                <ComboBoxItem Content="100mm (378pt)" Tag="378" />
+                                <ComboBoxItem Content="120mm (454pt)" Tag="454" />
+                                <ComboBoxItem Content="150mm (567pt)" Tag="567" />
+                                <ComboBoxItem Content="200mm (756pt)" Tag="756" />
+                                <ComboBoxItem Content="250mm (945pt)" Tag="945" />
+                                <ComboBoxItem Content="300mm (1134pt)" Tag="1134" />
                             </ComboBox>
 
                             <Label Content="Farbe:" Margin="0,10,0,2" />

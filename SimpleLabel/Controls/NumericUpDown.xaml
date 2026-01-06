@@ -11,7 +11,7 @@
         <TextBox x:Name="textBox" Grid.Column="0"
                  GotFocus="TextBox_GotFocus"
                  LostFocus="TextBox_LostFocus"
-                 TextChanged="TextBox_TextChanged"
+                 PreviewKeyDown="TextBox_PreviewKeyDown"
                  IsUndoEnabled="False"
                  VerticalContentAlignment="Center" />
 
