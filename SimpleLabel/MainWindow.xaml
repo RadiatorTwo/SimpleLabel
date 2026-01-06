@@ -1,0 +1,437 @@
+﻿<Window x:Class="SimpleLabel.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:SimpleLabel"
+        xmlns:controls="clr-namespace:SimpleLabel.Controls"
+        mc:Ignorable="d"
+        Title="SimpleLabel - Label Designer" Height="800" Width="1200"
+        PreviewKeyDown="Window_PreviewKeyDown">
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="250" />
+        </Grid.ColumnDefinitions>
+
+        <!-- Main area: Canvas and menus -->
+        <DockPanel Grid.Column="0">
+            <!-- Top: Menu bar -->
+            <Menu DockPanel.Dock="Top">
+                <MenuItem Header="_File">
+                    <MenuItem Header="_New" Click="FileNew_Click" InputGestureText="Ctrl+N" />
+                    <MenuItem Header="_Open..." Click="FileOpen_Click" InputGestureText="Ctrl+O" />
+                    <MenuItem Header="_Save" Click="FileSave_Click" InputGestureText="Ctrl+S" />
+                    <MenuItem Header="Save _As..." Click="FileSaveAs_Click" />
+                    <MenuItem Header="_Print" Click="Print_Click" InputGestureText="Ctrl+P" />
+                    <Separator />
+                    <MenuItem Header="E_xit" Click="FileExit_Click" />
+                </MenuItem>
+                <MenuItem Header="_Edit">
+                    <MenuItem x:Name="undoMenuItem" Header="_Undo" Click="Undo_Click" InputGestureText="Ctrl+Z" IsEnabled="False" />
+                    <MenuItem x:Name="redoMenuItem" Header="_Redo" Click="Redo_Click" InputGestureText="Ctrl+Y" IsEnabled="False" />
+                    <Separator />
+                    <MenuItem Header="_Duplicate" Click="Duplicate_Click" InputGestureText="Ctrl+D" />
+                    <MenuItem Header="D_elete" Click="Delete_Click" InputGestureText="Del" />
+                </MenuItem>
+                <MenuItem Header="_Arrange">
+                    <MenuItem Header="Ausrichtung">
+                        <MenuItem Header="Links ausrichten" Click="AlignLeft_Click" />
+                        <MenuItem Header="Horizontal zentrieren" Click="AlignCenterH_Click" />
+                        <MenuItem Header="Rechts ausrichten" Click="AlignRight_Click" />
+                        <Separator />
+                        <MenuItem Header="Oben ausrichten" Click="AlignTop_Click" />
+                        <MenuItem Header="Vertikal zentrieren" Click="AlignCenterV_Click" />
+                        <MenuItem Header="Unten ausrichten" Click="AlignBottom_Click" />
+                        <Separator />
+                        <MenuItem Header="Im Canvas zentrieren" Click="AlignCenter_Click" />
+                    </MenuItem>
+                    <Separator />
+                    <MenuItem Header="In den _Vordergrund" Click="BringToFront_Click" InputGestureText="Page Up" />
+                    <MenuItem Header="Eine Ebene nach _vorne" Click="BringForward_Click" />
+                    <MenuItem Header="Eine Ebene nach _hinten" Click="SendBackward_Click" />
+                    <MenuItem Header="In den _Hintergrund" Click="SendToBack_Click" InputGestureText="Page Down" />
+                    <Separator />
+                    <MenuItem x:Name="menuSnapToGrid" Header="_Raster einrasten" IsCheckable="True" Click="SnapToGrid_Click" InputGestureText="Ctrl+G" />
+                    <MenuItem Header="Rastergröße">
+                        <MenuItem x:Name="menuGridSize5" Header="5 mm" Click="GridSize5_Click" IsChecked="True" />
+                        <MenuItem x:Name="menuGridSize10" Header="10 mm" Click="GridSize10_Click" />
+                        <MenuItem x:Name="menuGridSize20" Header="20 mm" Click="GridSize20_Click" />
+                        <MenuItem x:Name="menuGridSize50" Header="50 mm" Click="GridSize50_Click" />
+                    </MenuItem>
+                </MenuItem>
+                <MenuItem Header="_Canvas">
+                    <MenuItem Header="50 x 25 mm" Click="CanvasSize50x25mm_Click" />
+                    <MenuItem Header="100 x 50 mm" Click="CanvasSize100x50mm_Click" />
+                    <MenuItem Header="100 x 150 mm" Click="CanvasSize100x150mm_Click" />
+                    <MenuItem Header="4 x 6 inches" Click="CanvasSize4x6in_Click" />
+                    <MenuItem Header="3 x 5 inches" Click="CanvasSize3x5in_Click" />
+                    <MenuItem Header="2 x 4 inches" Click="CanvasSize2x4in_Click" />
+                    <Separator />
+                    <MenuItem Header="Custom Size..." Click="CanvasSizeCustom_Click" />
+                </MenuItem>
+            </Menu>
+
+            <!-- Toolbar for design tools -->
+            <ToolBar DockPanel.Dock="Top">
+                <Button Content="Add Text" ToolTip="Add a text element to the canvas" Click="AddText_Click" />
+                <Button Content="Add Rectangle" ToolTip="Add a rectangle shape to the canvas" Click="AddRectangle_Click" />
+                <Button Content="Add Ellipse" ToolTip="Add an ellipse shape to the canvas" Click="AddEllipse_Click" />
+                <Button Content="Add Image" ToolTip="Add an image to the canvas" Click="AddImage_Click" />
+                <Separator />
+                <Button Content="Clear Canvas" ToolTip="Remove all elements from the canvas" Click="ClearCanvas_Click" />
+            </ToolBar>
+
+            <!-- Bottom: Status bar for future messages -->
+            <StatusBar DockPanel.Dock="Bottom">
+                <TextBlock x:Name="canvasSizeText" />
+            </StatusBar>
+
+            <!-- Center: Scrollable design canvas -->
+            <ScrollViewer HorizontalScrollBarVisibility="Auto"
+                          VerticalScrollBarVisibility="Auto"
+                          Background="LightGray">
+                <AdornerDecorator>
+                    <Canvas x:Name="designCanvas"
+                            Background="White"
+                            Width="378"
+                            Height="567"
+                            ClipToBounds="True"
+                            MouseLeftButtonDown="Canvas_MouseDown">
+
+                    </Canvas>
+                </AdornerDecorator>
+            </ScrollViewer>
+        </DockPanel>
+
+        <!-- Right: Properties panel -->
+        <DockPanel Grid.Column="1" Background="#F0F0F0">
+            <TextBlock DockPanel.Dock="Top"
+                       Text="Properties"
+                       FontWeight="Bold"
+                       FontSize="14"
+                       Padding="10"
+                       Background="#E0E0E0" />
+
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <StackPanel Margin="10">
+
+                    <!-- Position & Größe (immer sichtbar) -->
+                    <GroupBox Header="Position &amp; Größe (mm)" Margin="0,0,0,10">
+                        <StackPanel>
+                            <Label Content="X (mm):" Margin="0,5,0,2" />
+                            <controls:NumericUpDown x:Name="propertyX"
+                                                    Minimum="-1000" Maximum="10000" Increment="0.1"
+                                                    GotFocus="Property_GotFocus"
+                                                    LostFocus="PropertyX_LostFocus"
+                                                    ValueChanged="Property_ValueChanged"
+                                                    IsEnabled="False" />
+
+                            <Label Content="Y (mm):" Margin="0,10,0,2" />
+                            <controls:NumericUpDown x:Name="propertyY"
+                                                    Minimum="-1000" Maximum="10000" Increment="0.1"
+                                                    GotFocus="Property_GotFocus"
+                                                    LostFocus="PropertyY_LostFocus"
+                                                    ValueChanged="Property_ValueChanged"
+                                                    IsEnabled="False" />
+
+                            <Label Content="Breite (mm):" Margin="0,10,0,2" />
+                            <controls:NumericUpDown x:Name="propertyWidth"
+                                                    Minimum="1" Maximum="10000" Increment="0.1"
+                                                    GotFocus="Property_GotFocus"
+                                                    LostFocus="PropertyWidth_LostFocus"
+                                                    ValueChanged="Property_ValueChanged"
+                                                    IsEnabled="False" />
+
+                            <Label Content="Höhe (mm):" Margin="0,10,0,2" />
+                            <controls:NumericUpDown x:Name="propertyHeight"
+                                                    Minimum="1" Maximum="10000" Increment="0.1"
+                                                    GotFocus="Property_GotFocus"
+                                                    LostFocus="PropertyHeight_LostFocus"
+                                                    ValueChanged="Property_ValueChanged"
+                                                    IsEnabled="False" />
+                        </StackPanel>
+                    </GroupBox>
+
+                    <!-- Text-Formatierung (nur für TextBlock) -->
+                    <GroupBox x:Name="groupTextFormatting" Header="Text-Formatierung"
+                              Margin="0,0,0,10" Visibility="Collapsed">
+                        <StackPanel>
+                            <Label Content="Text:" Margin="0,5,0,2" />
+                            <TextBox x:Name="propertyText"
+                                     GotFocus="Property_GotFocus"
+                                     LostFocus="PropertyText_LostFocus"
+                                     IsEnabled="False"
+                                     IsUndoEnabled="False" />
+
+                            <Label Content="Schriftart:" Margin="0,10,0,2" />
+                            <ComboBox x:Name="propertyFontFamily"
+                                      GotFocus="Property_GotFocus"
+                                      LostFocus="PropertyFontFamily_LostFocus"
+                                      IsEnabled="False" />
+
+                            <Label Content="Schriftgröße:" Margin="0,10,0,2" />
+                            <ComboBox x:Name="propertyFontSize"
+                                      GotFocus="Property_GotFocus"
+                                      LostFocus="PropertyFontSize_LostFocus"
+                                      IsEnabled="False"
+                                      IsEditable="True">
+                                <ComboBoxItem Content="8" />
+                                <ComboBoxItem Content="9" />
+                                <ComboBoxItem Content="10" />
+                                <ComboBoxItem Content="11" />
+                                <ComboBoxItem Content="12" />
+                                <ComboBoxItem Content="14" />
+                                <ComboBoxItem Content="16" />
+                                <ComboBoxItem Content="18" />
+                                <ComboBoxItem Content="20" />
+                                <ComboBoxItem Content="24" />
+                                <ComboBoxItem Content="28" />
+                                <ComboBoxItem Content="32" />
+                                <ComboBoxItem Content="36" />
+                                <ComboBoxItem Content="48" />
+                                <ComboBoxItem Content="60" />
+                                <ComboBoxItem Content="72" />
+                            </ComboBox>
+
+                            <Label Content="Farbe:" Margin="0,10,0,2" />
+                            <StackPanel Orientation="Horizontal">
+                                <Rectangle x:Name="propertyColorPreview"
+                                           Width="60" Height="22"
+                                           Stroke="Black" StrokeThickness="1"
+                                           Margin="0,0,5,0" />
+                                <Button x:Name="propertyColorButton"
+                                        Content="Auswählen..."
+                                        Width="80"
+                                        Click="PropertyColor_Click"
+                                        IsEnabled="False" />
+                            </StackPanel>
+
+                            <Label Content="Ausrichtung:" Margin="0,10,0,2" />
+                            <ComboBox x:Name="propertyAlignment"
+                                      GotFocus="Property_GotFocus"
+                                      LostFocus="PropertyAlignment_LostFocus"
+                                      IsEnabled="False">
+                                <ComboBoxItem Content="Links" />
+                                <ComboBoxItem Content="Mitte" />
+                                <ComboBoxItem Content="Rechts" />
+                            </ComboBox>
+
+                            <CheckBox x:Name="propertyBold"
+                                      Content="Fett"
+                                      Margin="0,10,0,2"
+                                      Checked="PropertyBold_Changed"
+                                      Unchecked="PropertyBold_Changed"
+                                      IsEnabled="False" />
+
+                            <CheckBox x:Name="propertyItalic"
+                                      Content="Kursiv"
+                                      Margin="0,10,0,2"
+                                      Checked="PropertyItalic_Changed"
+                                      Unchecked="PropertyItalic_Changed"
+                                      IsEnabled="False" />
+                        </StackPanel>
+                    </GroupBox>
+
+                    <!-- Form-Styling (nur für Rectangle/Ellipse) -->
+                    <GroupBox x:Name="groupShapeStyling" Header="Form-Styling"
+                              Margin="0,0,0,10" Visibility="Collapsed">
+                        <StackPanel>
+                            <Label Content="Füllfarbe:" Margin="0,5,0,2" />
+                            <StackPanel Orientation="Horizontal">
+                                <Rectangle x:Name="propertyFillColorPreview"
+                                           Width="60" Height="22"
+                                           Stroke="Black" StrokeThickness="1"
+                                           Margin="0,0,5,0" />
+                                <Button x:Name="propertyFillColorButton"
+                                        Content="Auswählen..."
+                                        Width="80"
+                                        Click="PropertyFillColor_Click"
+                                        IsEnabled="False" />
+                            </StackPanel>
+
+                            <Label Content="Rahmenfarbe:" Margin="0,10,0,2" />
+                            <StackPanel Orientation="Horizontal">
+                                <Rectangle x:Name="propertyStrokeColorPreview"
+                                           Width="60" Height="22"
+                                           Stroke="Black" StrokeThickness="1"
+                                           Margin="0,0,5,0" />
+                                <Button x:Name="propertyStrokeColorButton"
+                                        Content="Auswählen..."
+                                        Width="80"
+                                        Click="PropertyStrokeColor_Click"
+                                        IsEnabled="False" />
+                            </StackPanel>
+
+                            <Label Content="Rahmenstärke:" Margin="0,10,0,2" />
+                            <controls:NumericUpDown x:Name="propertyStrokeThickness"
+                                                    Minimum="0" Maximum="50" Increment="0.5"
+                                                    GotFocus="Property_GotFocus"
+                                                    LostFocus="PropertyStrokeThickness_LostFocus"
+                                                    ValueChanged="Property_ValueChanged"
+                                                    IsEnabled="False" />
+
+                            <!-- Eckenradius (nur Rectangle) -->
+                            <Label x:Name="labelRadiusX" Content="Eckenradius X:" Margin="0,10,0,2" Visibility="Collapsed" />
+                            <controls:NumericUpDown x:Name="propertyRadiusX"
+                                                    Minimum="0" Maximum="200" Increment="1"
+                                                    GotFocus="Property_GotFocus"
+                                                    LostFocus="PropertyRadiusX_LostFocus"
+                                                    ValueChanged="Property_ValueChanged"
+                                                    IsEnabled="False"
+                                                    Visibility="Collapsed" />
+
+                            <Label x:Name="labelRadiusY" Content="Eckenradius Y:" Margin="0,10,0,2" Visibility="Collapsed" />
+                            <controls:NumericUpDown x:Name="propertyRadiusY"
+                                                    Minimum="0" Maximum="200" Increment="1"
+                                                    GotFocus="Property_GotFocus"
+                                                    LostFocus="PropertyRadiusY_LostFocus"
+                                                    ValueChanged="Property_ValueChanged"
+                                                    IsEnabled="False"
+                                                    Visibility="Collapsed" />
+
+                            <!-- Rahmen-Muster -->
+                            <Label Content="Rahmen-Muster:" Margin="0,10,0,2" />
+                            <ComboBox x:Name="propertyStrokeDashPattern"
+                                      GotFocus="Property_GotFocus"
+                                      SelectionChanged="PropertyStrokeDashPattern_Changed"
+                                      IsEnabled="False">
+                                <ComboBoxItem Content="Durchgehend" Tag="Solid" />
+                                <ComboBoxItem Content="Gestrichelt" Tag="Dash" />
+                                <ComboBoxItem Content="Gepunktet" Tag="Dot" />
+                                <ComboBoxItem Content="Strich-Punkt" Tag="DashDot" />
+                            </ComboBox>
+
+                            <!-- Gradient Fill -->
+                            <CheckBox x:Name="propertyUseGradientFill"
+                                      Content="Farbverlauf verwenden"
+                                      Margin="0,10,0,5"
+                                      Checked="PropertyUseGradientFill_Changed"
+                                      Unchecked="PropertyUseGradientFill_Changed"
+                                      IsEnabled="False" />
+
+                            <!-- Gradient Colors (nur sichtbar wenn Gradient aktiviert) -->
+                            <StackPanel x:Name="panelGradientControls" Visibility="Collapsed">
+                                <Label Content="Startfarbe:" Margin="0,10,0,2" />
+                                <StackPanel Orientation="Horizontal">
+                                    <Rectangle x:Name="propertyGradientStartPreview"
+                                               Width="60" Height="22"
+                                               Stroke="Black" StrokeThickness="1"
+                                               Margin="0,0,5,0" />
+                                    <Button x:Name="propertyGradientStartButton"
+                                            Content="Auswählen..."
+                                            Width="80"
+                                            Click="PropertyGradientStart_Click"
+                                            IsEnabled="False" />
+                                </StackPanel>
+
+                                <Label Content="Endfarbe:" Margin="0,10,0,2" />
+                                <StackPanel Orientation="Horizontal">
+                                    <Rectangle x:Name="propertyGradientEndPreview"
+                                               Width="60" Height="22"
+                                               Stroke="Black" StrokeThickness="1"
+                                               Margin="0,0,5,0" />
+                                    <Button x:Name="propertyGradientEndButton"
+                                            Content="Auswählen..."
+                                            Width="80"
+                                            Click="PropertyGradientEnd_Click"
+                                            IsEnabled="False" />
+                                </StackPanel>
+
+                                <Label Content="Winkel (0-360°):" Margin="0,10,0,2" />
+                                <Slider x:Name="propertyGradientAngle"
+                                        Minimum="0" Maximum="360" Value="0"
+                                        TickFrequency="15" IsSnapToTickEnabled="True"
+                                        GotFocus="Property_GotFocus"
+                                        LostFocus="PropertyGradientAngle_LostFocus"
+                                        IsEnabled="False" />
+                                <TextBlock x:Name="propertyGradientAngleValue" Text="0°"
+                                           HorizontalAlignment="Center" />
+                            </StackPanel>
+                        </StackPanel>
+                    </GroupBox>
+
+                    <!-- Bildfilter (nur für Image) -->
+                    <GroupBox x:Name="groupImageFilters" Header="Bildfilter"
+                              Margin="0,0,0,10" Visibility="Collapsed">
+                        <StackPanel>
+                            <CheckBox x:Name="propertyMonochromeEnabled"
+                                      Content="Monochrom-Filter aktivieren"
+                                      Margin="0,5,0,10"
+                                      Checked="PropertyMonochromeEnabled_Changed"
+                                      Unchecked="PropertyMonochromeEnabled_Changed"
+                                      IsEnabled="False" />
+
+                            <!-- Monochrome Filter Controls (nur sichtbar wenn aktiviert) -->
+                            <StackPanel x:Name="panelMonochromeControls" Visibility="Collapsed">
+                                <Label Content="Algorithmus:" Margin="0,5,0,2" />
+                                <ComboBox x:Name="propertyAlgorithm"
+                                          GotFocus="Property_GotFocus"
+                                          SelectionChanged="PropertyAlgorithm_Changed"
+                                          IsEnabled="False">
+                                    <ComboBoxItem Content="Schwellenwert (Threshold)" Tag="Threshold" />
+                                    <ComboBoxItem Content="Floyd-Steinberg Dithering" Tag="FloydSteinberg" />
+                                    <ComboBoxItem Content="Ordered Dithering (Bayer)" Tag="Ordered" />
+                                    <ComboBoxItem Content="Atkinson Dithering" Tag="Atkinson" />
+                                </ComboBox>
+
+                                <Label Content="Schwellenwert (0-255):" Margin="0,10,0,2" />
+                                <Slider x:Name="propertyThresholdSlider"
+                                        Minimum="0" Maximum="255"
+                                        Value="128"
+                                        TickFrequency="1"
+                                        IsSnapToTickEnabled="True"
+                                        ValueChanged="PropertyThreshold_ValueChanged"
+                                        GotFocus="Property_GotFocus"
+                                        LostFocus="PropertyThreshold_LostFocus"
+                                        IsEnabled="False" />
+                                <TextBlock x:Name="propertyThresholdValue"
+                                           Text="128"
+                                           HorizontalAlignment="Center"
+                                           Margin="0,2,0,5" />
+
+                                <Label Content="Helligkeit (-100 bis +100):" Margin="0,10,0,2" />
+                                <Slider x:Name="propertyBrightness"
+                                        Minimum="-100" Maximum="100"
+                                        Value="0"
+                                        TickFrequency="5"
+                                        IsSnapToTickEnabled="True"
+                                        ValueChanged="PropertyBrightness_ValueChanged"
+                                        GotFocus="Property_GotFocus"
+                                        LostFocus="PropertyBrightness_LostFocus"
+                                        IsEnabled="False" />
+                                <TextBlock x:Name="propertyBrightnessValue"
+                                           Text="0"
+                                           HorizontalAlignment="Center"
+                                           Margin="0,2,0,5" />
+
+                                <Label Content="Kontrast (-100 bis +100):" Margin="0,10,0,2" />
+                                <Slider x:Name="propertyContrast"
+                                        Minimum="-100" Maximum="100"
+                                        Value="0"
+                                        TickFrequency="5"
+                                        IsSnapToTickEnabled="True"
+                                        ValueChanged="PropertyContrast_ValueChanged"
+                                        GotFocus="Property_GotFocus"
+                                        LostFocus="PropertyContrast_LostFocus"
+                                        IsEnabled="False" />
+                                <TextBlock x:Name="propertyContrastValue"
+                                           Text="0"
+                                           HorizontalAlignment="Center"
+                                           Margin="0,2,0,5" />
+
+                                <CheckBox x:Name="propertyInvert"
+                                          Content="Farben invertieren (Negativ)"
+                                          Margin="0,10,0,5"
+                                          Checked="PropertyInvert_Changed"
+                                          Unchecked="PropertyInvert_Changed"
+                                          IsEnabled="False" />
+                            </StackPanel>
+                        </StackPanel>
+                    </GroupBox>
+
+                </StackPanel>
+            </ScrollViewer>
+        </DockPanel>
+    </Grid>
+</Window>
