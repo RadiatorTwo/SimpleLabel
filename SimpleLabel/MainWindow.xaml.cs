@@ -385,6 +385,35 @@ public partial class MainWindow : Window
         UpdateUndoRedoButtons();
     }
 
+    // Zoom functionality
+    private void ZoomSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (canvasScaleTransform == null || zoomPercentText == null)
+            return;
+
+        double zoomLevel = zoomSlider.Value;
+        canvasScaleTransform.ScaleX = zoomLevel;
+        canvasScaleTransform.ScaleY = zoomLevel;
+        zoomPercentText.Text = $"{(zoomLevel * 100):F0}%";
+    }
+
+    private void ZoomIn_Click(object sender, RoutedEventArgs e)
+    {
+        double newZoom = Math.Min(zoomSlider.Value + 0.1, zoomSlider.Maximum);
+        zoomSlider.Value = newZoom;
+    }
+
+    private void ZoomOut_Click(object sender, RoutedEventArgs e)
+    {
+        double newZoom = Math.Max(zoomSlider.Value - 0.1, zoomSlider.Minimum);
+        zoomSlider.Value = newZoom;
+    }
+
+    private void ZoomReset_Click(object sender, RoutedEventArgs e)
+    {
+        zoomSlider.Value = 1.0;
+    }
+
     private void AddText_Click(object sender, RoutedEventArgs e)
     {
         var textBlock = CreateTextElement("Sample Text", 50, 50);
@@ -438,7 +467,7 @@ public partial class MainWindow : Window
         var textBlock = new TextBlock
         {
             Text = text,
-            FontSize = 38,  // ~10mm character height
+            FontSize = 30,  // 8mm character height (one step smaller)
             Foreground = Brushes.Black,
             FontFamily = new FontFamily("Arial"),
             TextAlignment = TextAlignment.Left,
@@ -447,8 +476,8 @@ public partial class MainWindow : Window
             TextWrapping = TextWrapping.Wrap, // Enable text wrapping to prevent clipping
             Cursor = Cursors.Hand,
             Tag = "draggable",
-            Width = 200,  // Explicit size needed for resize
-            Height = 50
+            Width = 300,  // Larger default width for more text
+            Height = 80   // Larger default height to fit 8mm text comfortably
         };
 
         Canvas.SetLeft(textBlock, x);
@@ -862,11 +891,11 @@ public partial class MainWindow : Window
         if (printDialog.ShowDialog() != true)
             return;
 
+        // Save original transform (includes zoom)
+        Transform originalTransform = designCanvas.LayoutTransform;
+
         try
         {
-            // Save original transform
-            Transform originalTransform = designCanvas.LayoutTransform;
-
             // Get printer capabilities
             PrintCapabilities capabilities = printDialog.PrintQueue.GetPrintCapabilities(printDialog.PrintTicket);
 
@@ -875,7 +904,7 @@ public partial class MainWindow : Window
             double scaleY = capabilities.PageImageableArea.ExtentHeight / designCanvas.ActualHeight;
             double scale = Math.Min(scaleX, scaleY); // Preserve aspect ratio
 
-            // Apply transform
+            // Apply print transform (temporarily replaces zoom transform)
             designCanvas.LayoutTransform = new ScaleTransform(scale, scale);
 
             // Arrange to printable area
@@ -895,8 +924,8 @@ public partial class MainWindow : Window
         }
         finally
         {
-            // Restore original transform
-            designCanvas.LayoutTransform = null;
+            // Restore original transform (including zoom)
+            designCanvas.LayoutTransform = originalTransform;
 
             // Force layout update to restore on-screen appearance
             designCanvas.UpdateLayout();
