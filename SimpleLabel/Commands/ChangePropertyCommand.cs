@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Shapes;
 
 namespace SimpleLabel.Commands;
 
@@ -45,6 +46,22 @@ public class ChangePropertyCommand : ICommand
             case "Height":
                 if (element is FrameworkElement fe2)
                     fe2.Height = value;
+                break;
+            case "X1":
+                if (element is Line line1)
+                    line1.X1 = value;
+                break;
+            case "Y1":
+                if (element is Line line2)
+                    line2.Y1 = value;
+                break;
+            case "X2":
+                if (element is Line line3)
+                    line3.X2 = value;
+                break;
+            case "Y2":
+                if (element is Line line4)
+                    line4.Y2 = value;
                 break;
         }
     }

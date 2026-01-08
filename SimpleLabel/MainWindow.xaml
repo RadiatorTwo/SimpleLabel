@@ -77,6 +77,10 @@
                 <Button Content="Add Text" ToolTip="Add a text element to the canvas" Click="AddText_Click" />
                 <Button Content="Add Rectangle" ToolTip="Add a rectangle shape to the canvas" Click="AddRectangle_Click" />
                 <Button Content="Add Ellipse" ToolTip="Add an ellipse shape to the canvas" Click="AddEllipse_Click" />
+                <Button Content="Add Line" ToolTip="Add a line to the canvas" Click="AddLine_Click" />
+                <Button Content="Add Arrow" ToolTip="Add an arrow to the canvas" Click="AddArrow_Click" />
+                <Button Content="Add Triangle" ToolTip="Add a triangle to the canvas" Click="AddTriangle_Click" />
+                <Button Content="Add Star" ToolTip="Add a star to the canvas" Click="AddStar_Click" />
                 <Button Content="Add Image" ToolTip="Add an image to the canvas" Click="AddImage_Click" />
                 <Separator />
                 <Button Content="Clear Canvas" ToolTip="Remove all elements from the canvas" Click="ClearCanvas_Click" />
@@ -166,6 +170,25 @@
                                                     LostFocus="PropertyHeight_LostFocus"
                                                     ValueChanged="Property_ValueChanged"
                                                     IsEnabled="False" />
+
+                            <!-- Line/Arrow endpoints (only for Line/Arrow) -->
+                            <Label x:Name="labelX2" Content="X2 (mm):" Margin="0,10,0,2" Visibility="Collapsed" />
+                            <controls:NumericUpDown x:Name="propertyX2"
+                                                    Minimum="-1000" Maximum="10000" Increment="0.1"
+                                                    GotFocus="Property_GotFocus"
+                                                    LostFocus="PropertyX2_LostFocus"
+                                                    ValueChanged="Property_ValueChanged"
+                                                    IsEnabled="False"
+                                                    Visibility="Collapsed" />
+
+                            <Label x:Name="labelY2" Content="Y2 (mm):" Margin="0,10,0,2" Visibility="Collapsed" />
+                            <controls:NumericUpDown x:Name="propertyY2"
+                                                    Minimum="-1000" Maximum="10000" Increment="0.1"
+                                                    GotFocus="Property_GotFocus"
+                                                    LostFocus="PropertyY2_LostFocus"
+                                                    ValueChanged="Property_ValueChanged"
+                                                    IsEnabled="False"
+                                                    Visibility="Collapsed" />
                         </StackPanel>
                     </GroupBox>
 
@@ -257,6 +280,41 @@
                                       Checked="PropertyItalic_Changed"
                                       Unchecked="PropertyItalic_Changed"
                                       IsEnabled="False" />
+                        </StackPanel>
+                    </GroupBox>
+
+                    <!-- Arrow Controls (nur für Arrow) -->
+                    <GroupBox x:Name="groupArrowControls" Header="Pfeil-Einstellungen"
+                              Margin="0,0,0,10" Visibility="Collapsed">
+                        <StackPanel>
+                            <CheckBox x:Name="propertyHasStartArrow"
+                                      Content="Pfeil am Start"
+                                      Margin="0,5,0,5"
+                                      Checked="PropertyHasStartArrow_Changed"
+                                      Unchecked="PropertyHasStartArrow_Changed"
+                                      IsEnabled="False" />
+
+                            <CheckBox x:Name="propertyHasEndArrow"
+                                      Content="Pfeil am Ende"
+                                      Margin="0,5,0,10"
+                                      Checked="PropertyHasEndArrow_Changed"
+                                      Unchecked="PropertyHasEndArrow_Changed"
+                                      IsEnabled="False" />
+
+                            <Label Content="Pfeilspitzengröße:" Margin="0,5,0,2" />
+                            <Slider x:Name="propertyArrowheadSize"
+                                    Minimum="5" Maximum="30"
+                                    Value="10"
+                                    TickFrequency="1"
+                                    IsSnapToTickEnabled="True"
+                                    ValueChanged="PropertyArrowheadSize_ValueChanged"
+                                    GotFocus="Property_GotFocus"
+                                    LostFocus="PropertyArrowheadSize_LostFocus"
+                                    IsEnabled="False" />
+                            <TextBlock x:Name="propertyArrowheadSizeValue"
+                                       Text="10"
+                                       HorizontalAlignment="Center"
+                                       Margin="0,2,0,5" />
                         </StackPanel>
                     </GroupBox>
 

@@ -43,4 +43,16 @@ public class CanvasElement
     public bool? InvertColors { get; set; }
     public double? Brightness { get; set; } // -100 to 100
     public double? Contrast { get; set; } // -100 to 100
+
+    // Line-specific properties (Line uses X1/Y1/X2/Y2 instead of Width/Height)
+    public double? X2 { get; set; }
+    public double? Y2 { get; set; }
+
+    // Arrow-specific properties
+    public bool? HasStartArrow { get; set; }
+    public bool? HasEndArrow { get; set; }
+    public double? ArrowheadSize { get; set; }
+
+    // Polygon-specific properties
+    public string? PolygonPoints { get; set; } // Space-separated "x1,y1 x2,y2 x3,y3..."
 }
