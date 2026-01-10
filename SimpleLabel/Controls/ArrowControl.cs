@@ -116,9 +116,9 @@ public class ArrowControl : ElementControlBase
         if (double.IsNaN(canvasLeft)) canvasLeft = 0.0;
         if (double.IsNaN(canvasTop)) canvasTop = 0.0;
 
-        // Calculate X1, Y1, X2, Y2
-        double x1 = canvasLeft;
-        double y1 = canvasTop;
+        // Calculate X1, Y1, X2, Y2 (add relative line coordinates to canvas position)
+        double x1 = canvasLeft + _line.X1;
+        double y1 = canvasTop + _line.Y1;
         double x2 = canvasLeft + _line.X2;
         double y2 = canvasTop + _line.Y2;
 
@@ -180,8 +180,86 @@ public class ArrowControl : ElementControlBase
     /// <param name="newValue">The new value for the property.</param>
     public override void ApplyPropertyChanges(string propertyName, object newValue)
     {
-        // TODO: Implement in Phase 6 when integrating with MainWindow
-        throw new NotImplementedException("Property panel integration will be completed in Phase 6.");
+        // Get current absolute endpoints
+        double x1 = _canvasElement.X;
+        double y1 = _canvasElement.Y;
+        double x2 = _canvasElement.X2 ?? x1;
+        double y2 = _canvasElement.Y2 ?? y1;
+
+        switch (propertyName)
+        {
+            case "X1":
+            case "X":
+                // newValue is in mm, convert to pixels
+                x1 = Convert.ToDouble(newValue) * MM_TO_PIXELS;
+                UpdateCanvasFromEndpoints(x1, y1, x2, y2);
+                break;
+
+            case "Y1":
+            case "Y":
+                y1 = Convert.ToDouble(newValue) * MM_TO_PIXELS;
+                UpdateCanvasFromEndpoints(x1, y1, x2, y2);
+                break;
+
+            case "X2":
+                x2 = Convert.ToDouble(newValue) * MM_TO_PIXELS;
+                UpdateCanvasFromEndpoints(x1, y1, x2, y2);
+                break;
+
+            case "Y2":
+                y2 = Convert.ToDouble(newValue) * MM_TO_PIXELS;
+                UpdateCanvasFromEndpoints(x1, y1, x2, y2);
+                break;
+
+            case "StrokeColor":
+                var color = (Color)newValue;
+                var brush = new SolidColorBrush(color);
+                _line.Stroke = brush;
+                _canvasElement.StrokeColor = color.ToString();
+                // Also update arrowhead colors
+                if (_startArrowhead != null)
+                {
+                    _startArrowhead.Fill = brush;
+                    _startArrowhead.Stroke = brush;
+                }
+                if (_endArrowhead != null)
+                {
+                    _endArrowhead.Fill = brush;
+                    _endArrowhead.Stroke = brush;
+                }
+                break;
+
+            case "StrokeThickness":
+                var thickness = Convert.ToDouble(newValue);
+                _line.StrokeThickness = thickness;
+                _canvasElement.StrokeThickness = thickness;
+                break;
+
+            case "HasStartArrow":
+                _canvasElement.HasStartArrow = Convert.ToBoolean(newValue);
+                RecreateArrowheads();
+                break;
+
+            case "HasEndArrow":
+                _canvasElement.HasEndArrow = Convert.ToBoolean(newValue);
+                RecreateArrowheads();
+                break;
+
+            case "ArrowheadSize":
+                _canvasElement.ArrowheadSize = Convert.ToDouble(newValue);
+                RecreateArrowheads();
+                break;
+
+            default:
+                // Unknown property - ignore silently
+                return;
+        }
+
+        // Mark document as dirty
+        if (_mainWindow != null)
+        {
+            _mainWindow.isDirty = true;
+        }
     }
 
     #region Endpoint Helpers
@@ -291,6 +369,7 @@ public class ArrowControl : ElementControlBase
     /// <summary>
     /// Recreates arrowheads based on current CanvasElement settings.
     /// Call this after changing HasStartArrow, HasEndArrow, or ArrowheadSize.
+    /// Also updates the canvas Tag to keep it in sync with member variables.
     /// </summary>
     public void RecreateArrowheads()
     {
@@ -322,6 +401,10 @@ public class ArrowControl : ElementControlBase
             _endArrowhead = CreateArrowhead(_line.X2, _line.Y2, angle, arrowheadSize);
             _arrowCanvas.Children.Insert(0, _endArrowhead);
         }
+
+        // Update Tag to keep in sync with member variables
+        // This ensures new ArrowControl instances get the correct arrowhead references
+        _arrowCanvas.Tag = Tuple.Create(_line, _startArrowhead, _endArrowhead, _canvasElement);
     }
 
     #endregion
@@ -337,11 +420,17 @@ public class ArrowControl : ElementControlBase
     /// <param name="verticalChange">The vertical movement delta.</param>
     public override void HandleResize(ResizeHandle handle, double horizontalChange, double verticalChange)
     {
-        // Get current absolute endpoints from CanvasElement
-        double x1 = _canvasElement.X;
-        double y1 = _canvasElement.Y;
-        double x2 = _canvasElement.X2 ?? x1;
-        double y2 = _canvasElement.Y2 ?? y1;
+        // Calculate current absolute endpoints from canvas position and relative line coordinates
+        // This is more reliable than reading from CanvasElement, which may not be in sync
+        double canvasLeft = Canvas.GetLeft(_arrowCanvas);
+        double canvasTop = Canvas.GetTop(_arrowCanvas);
+        if (double.IsNaN(canvasLeft)) canvasLeft = 0.0;
+        if (double.IsNaN(canvasTop)) canvasTop = 0.0;
+
+        double x1 = canvasLeft + _line.X1;
+        double y1 = canvasTop + _line.Y1;
+        double x2 = canvasLeft + _line.X2;
+        double y2 = canvasTop + _line.Y2;
 
         switch (handle)
         {

@@ -301,7 +301,108 @@ public class TextElementControl : ElementControlBase
     /// <param name="newValue">The new value for the property.</param>
     public override void ApplyPropertyChanges(string propertyName, object newValue)
     {
-        throw new NotImplementedException("Property panel integration will be implemented in Phase 6.");
+        switch (propertyName)
+        {
+            case "X":
+                var newX = Convert.ToDouble(newValue) * MM_TO_PIXELS;
+                SetCanvasLeft(newX);
+                _canvasElement.X = newX;
+                break;
+
+            case "Y":
+                var newY = Convert.ToDouble(newValue) * MM_TO_PIXELS;
+                SetCanvasTop(newY);
+                _canvasElement.Y = newY;
+                break;
+
+            case "Width":
+                var newWidth = Convert.ToDouble(newValue) * MM_TO_PIXELS;
+                _textBlock.Width = newWidth;
+                _canvasElement.Width = newWidth;
+                break;
+
+            case "Height":
+                var newHeight = Convert.ToDouble(newValue) * MM_TO_PIXELS;
+                _textBlock.Height = newHeight;
+                _canvasElement.Height = newHeight;
+                break;
+
+            case "Text":
+                var text = newValue?.ToString() ?? string.Empty;
+                _textBlock.Text = text;
+                _canvasElement.Text = text;
+                break;
+
+            case "FontFamily":
+                FontFamily fontFamily;
+                if (newValue is FontFamily ff)
+                    fontFamily = ff;
+                else
+                    fontFamily = new FontFamily(newValue?.ToString() ?? "Segoe UI");
+                _textBlock.FontFamily = fontFamily;
+                _canvasElement.FontFamily = fontFamily.Source;
+                break;
+
+            case "FontSize":
+                // FontSize is in points (pt), not mm
+                var fontSize = Convert.ToDouble(newValue);
+                _textBlock.FontSize = fontSize;
+                _canvasElement.FontSize = fontSize;
+                break;
+
+            case "Color":
+                var color = (Color)newValue;
+                _textBlock.Foreground = new SolidColorBrush(color);
+                _canvasElement.ForegroundColor = color.ToString();
+                break;
+
+            case "Alignment":
+                TextAlignment alignment;
+                if (newValue is TextAlignment ta)
+                    alignment = ta;
+                else if (newValue is string alignStr)
+                    alignment = alignStr switch
+                    {
+                        "Center" => TextAlignment.Center,
+                        "Right" => TextAlignment.Right,
+                        _ => TextAlignment.Left
+                    };
+                else if (newValue is int alignIndex)
+                    alignment = alignIndex switch
+                    {
+                        1 => TextAlignment.Center,
+                        2 => TextAlignment.Right,
+                        _ => TextAlignment.Left
+                    };
+                else
+                    alignment = TextAlignment.Left;
+
+                _textBlock.TextAlignment = alignment;
+                _canvasElement.TextAlignment = alignment.ToString();
+                break;
+
+            case "Bold":
+                var isBold = Convert.ToBoolean(newValue);
+                _textBlock.FontWeight = isBold ? FontWeights.Bold : FontWeights.Normal;
+                _canvasElement.FontWeight = _textBlock.FontWeight.ToString();
+                break;
+
+            case "Italic":
+                var isItalic = Convert.ToBoolean(newValue);
+                _textBlock.FontStyle = isItalic ? FontStyles.Italic : FontStyles.Normal;
+                _canvasElement.FontStyle = _textBlock.FontStyle.ToString();
+                break;
+
+            default:
+                // Unknown property - ignore silently
+                return;
+        }
+
+        // Mark document as dirty
+        if (_mainWindow != null)
+        {
+            _mainWindow.isDirty = true;
+        }
     }
 
     #endregion

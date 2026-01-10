@@ -249,34 +249,6 @@ namespace SimpleLabel
                     height = adornedElement.ActualHeight;
                 }
             }
-            // Fallback: Special handling for Line Canvas wrapper - use internal Line dimensions
-            else if (adornedElement is Canvas canvas && canvas.Tag is Tuple<Line, CanvasElement>)
-            {
-                var lineData = (Tuple<Line, CanvasElement>)canvas.Tag;
-                var line = lineData.Item1;
-                width = Math.Abs(line.X2 - line.X1);
-                height = Math.Abs(line.Y2 - line.Y1);
-                // Add minimal padding to make handles visible
-                width = Math.Max(width, padding * 2);
-                height = Math.Max(height, padding * 2);
-            }
-            // Fallback: Special handling for standalone Line elements (legacy support)
-            else if (adornedElement is Line line)
-            {
-                width = Math.Abs(line.X2 - line.X1);
-                height = Math.Abs(line.Y2 - line.Y1);
-                // Add minimal padding to make handles visible
-                width = Math.Max(width, padding * 2);
-                height = Math.Max(height, padding * 2);
-            }
-            // Fallback: Special handling for Arrow Canvas - use internal Line dimensions
-            else if (adornedElement is Canvas arrowCanvas && arrowCanvas.Tag is Tuple<Line, Polygon, Polygon, object>)
-            {
-                var arrowData = (Tuple<Line, Polygon, Polygon, object>)arrowCanvas.Tag;
-                var arrowLine = arrowData.Item1;
-                width = Math.Abs(arrowLine.X2 - arrowLine.X1);
-                height = Math.Abs(arrowLine.Y2 - arrowLine.Y1);
-            }
             else
             {
                 width = adornedElement.ActualWidth;
@@ -303,534 +275,112 @@ namespace SimpleLabel
         {
             if (adornedElement == null) return;
 
-            // Try to delegate to IElementControl if registered
+            // Delegate to IElementControl if registered
             var control = mainWindow?.GetElementControl(adornedElement);
             if (control != null)
             {
                 control.HandleResize(ResizeHandle.BottomRight, e.HorizontalChange, e.VerticalChange);
                 InvalidateArrange();
                 mainWindow?.UpdatePropertiesPanel();
-                return;
             }
-
-            // Fallback: Special handling for Line Canvas wrapper
-            if (adornedElement is Canvas canvas && canvas.Tag is Tuple<Line, CanvasElement>)
-            {
-                var lineData = (Tuple<Line, CanvasElement>)canvas.Tag;
-                var canvasElement = lineData.Item2;
-
-                // Get current absolute coordinates from CanvasElement
-                double x1 = canvasElement.X;
-                double y1 = canvasElement.Y;
-                double x2 = canvasElement.X2 ?? x1;
-                double y2 = canvasElement.Y2 ?? y1;
-
-                // Determine if line is primarily horizontal or vertical
-                double dx = Math.Abs(x2 - x1);
-                double dy = Math.Abs(y2 - y1);
-                bool isHorizontal = dx > dy;
-
-                double newX2, newY2;
-
-                if (isHorizontal)
-                {
-                    // For horizontal lines, only allow horizontal resize
-                    newX2 = x2 + e.HorizontalChange;
-                    newY2 = y2; // Keep Y constant
-                }
-                else
-                {
-                    // For vertical lines, only allow vertical resize
-                    newX2 = x2; // Keep X constant
-                    newY2 = y2 + e.VerticalChange;
-                }
-
-                // Enforce minimum length
-                double length = Math.Sqrt(Math.Pow(newX2 - x1, 2) + Math.Pow(newY2 - y1, 2));
-                if (length < 10)
-                {
-                    return; // Don't update if too short
-                }
-
-                // Update canvas and line positions to keep line centered
-                mainWindow?.UpdateLineCanvas(canvas, x1, y1, newX2, newY2);
-
-                // Update adorner position and size
-                InvalidateArrange();
-                InvalidateVisual();
-            }
-            // Special handling for standalone Line elements (legacy support)
-            else if (adornedElement is Line line)
-            {
-                // Move X2/Y2 freely - allows changing both length and direction
-                line.X2 += e.HorizontalChange;
-                line.Y2 += e.VerticalChange;
-
-                // Enforce minimum length (distance between X1,Y1 and X2,Y2)
-                double length = Math.Sqrt(Math.Pow(line.X2 - line.X1, 2) + Math.Pow(line.Y2 - line.Y1, 2));
-                if (length < 10)
-                {
-                    // Revert if too short
-                    line.X2 -= e.HorizontalChange;
-                    line.Y2 -= e.VerticalChange;
-                }
-
-                // Update adorner position and size
-                InvalidateArrange();
-                InvalidateVisual();
-            }
-            // Special handling for Arrow Canvas - resize internal Line
-            else if (adornedElement is Canvas arrowCanvas2 && arrowCanvas2.Tag is Tuple<Line, Polygon, Polygon, object>)
-            {
-                var arrowData = (Tuple<Line, Polygon, Polygon, object>)arrowCanvas2.Tag;
-                var arrowLine = arrowData.Item1;
-
-                // Update internal line's endpoint
-                arrowLine.X2 += e.HorizontalChange;
-                arrowLine.Y2 += e.VerticalChange;
-
-                // Minimum line length
-                double length = Math.Sqrt(Math.Pow(arrowLine.X2 - arrowLine.X1, 2) + Math.Pow(arrowLine.Y2 - arrowLine.Y1, 2));
-                if (length < 10)
-                {
-                    // Revert change
-                    arrowLine.X2 -= e.HorizontalChange;
-                    arrowLine.Y2 -= e.VerticalChange;
-                }
-                else
-                {
-                    // Update Canvas size and recreate arrowheads
-                    arrowCanvas2.Width = Math.Abs(arrowLine.X2) + 20; // Add padding for arrowheads
-                    arrowCanvas2.Height = Math.Abs(arrowLine.Y2) + 20;
-                    mainWindow?.RecreateArrowArrowheads(arrowCanvas2);
-                }
-            }
-            else
-            {
-                double newWidth = adornedElement.Width + e.HorizontalChange;
-                double newHeight = adornedElement.Height + e.VerticalChange;
-
-                // If Shift is pressed, maintain aspect ratio
-                if (Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift))
-                {
-                    double aspectRatio = adornedElement.Width / adornedElement.Height;
-                    // Use the larger change to determine the new size
-                    if (Math.Abs(e.HorizontalChange) > Math.Abs(e.VerticalChange))
-                    {
-                        newHeight = newWidth / aspectRatio;
-                    }
-                    else
-                    {
-                        newWidth = newHeight * aspectRatio;
-                    }
-                }
-
-                if (newWidth > 10) adornedElement.Width = newWidth;
-                if (newHeight > 10) adornedElement.Height = newHeight;
-            }
-
-            // Update properties panel in real-time during resize
-            mainWindow?.UpdatePropertiesPanel();
         }
 
         private void HandleTopLeft(object sender, DragDeltaEventArgs e)
         {
             if (adornedElement == null) return;
 
-            // Try to delegate to IElementControl if registered
+            // Delegate to IElementControl if registered
             var control = mainWindow?.GetElementControl(adornedElement);
             if (control != null)
             {
                 control.HandleResize(ResizeHandle.TopLeft, e.HorizontalChange, e.VerticalChange);
                 InvalidateArrange();
                 mainWindow?.UpdatePropertiesPanel();
-                return;
             }
-
-            // Fallback: Special handling for Line Canvas wrapper
-            if (adornedElement is Canvas canvas && canvas.Tag is Tuple<Line, CanvasElement>)
-            {
-                var lineData = (Tuple<Line, CanvasElement>)canvas.Tag;
-                var canvasElement = lineData.Item2;
-
-                // Get current absolute coordinates from CanvasElement
-                double x1 = canvasElement.X;
-                double y1 = canvasElement.Y;
-                double x2 = canvasElement.X2 ?? x1;
-                double y2 = canvasElement.Y2 ?? y1;
-
-                // Determine if line is primarily horizontal or vertical
-                double dx = Math.Abs(x2 - x1);
-                double dy = Math.Abs(y2 - y1);
-                bool isHorizontal = dx > dy;
-
-                double newX1, newY1;
-
-                if (isHorizontal)
-                {
-                    // For horizontal lines, only allow horizontal resize
-                    newX1 = x1 + e.HorizontalChange;
-                    newY1 = y1; // Keep Y constant
-                }
-                else
-                {
-                    // For vertical lines, only allow vertical resize
-                    newX1 = x1; // Keep X constant
-                    newY1 = y1 + e.VerticalChange;
-                }
-
-                // Enforce minimum length
-                double length = Math.Sqrt(Math.Pow(x2 - newX1, 2) + Math.Pow(y2 - newY1, 2));
-                if (length < 10)
-                {
-                    return; // Don't update if too short
-                }
-
-                // Update canvas and line positions to keep line centered
-                mainWindow?.UpdateLineCanvas(canvas, newX1, newY1, x2, y2);
-
-                // Update adorner position and size
-                InvalidateArrange();
-                InvalidateVisual();
-            }
-            // Special handling for standalone Line elements (legacy support)
-            else if (adornedElement is Line line)
-            {
-                // Move X1/Y1 freely - allows changing both length and direction
-                line.X1 += e.HorizontalChange;
-                line.Y1 += e.VerticalChange;
-
-                // Enforce minimum length (distance between X1,Y1 and X2,Y2)
-                double length = Math.Sqrt(Math.Pow(line.X2 - line.X1, 2) + Math.Pow(line.Y2 - line.Y1, 2));
-                if (length < 10)
-                {
-                    // Revert if too short
-                    line.X1 -= e.HorizontalChange;
-                    line.Y1 -= e.VerticalChange;
-                }
-
-                // Update adorner position and size
-                InvalidateArrange();
-                InvalidateVisual();
-            }
-            else
-            {
-                double newWidth = adornedElement.Width - e.HorizontalChange;
-                double newHeight = adornedElement.Height - e.VerticalChange;
-
-                // If Shift is pressed, maintain aspect ratio
-                if (Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift))
-                {
-                    double aspectRatio = adornedElement.Width / adornedElement.Height;
-                    // Use the larger change to determine the new size
-                    if (Math.Abs(e.HorizontalChange) > Math.Abs(e.VerticalChange))
-                    {
-                        newHeight = newWidth / aspectRatio;
-                    }
-                    else
-                    {
-                        newWidth = newHeight * aspectRatio;
-                    }
-                }
-
-                if (newWidth > 10)
-                {
-                    double currentLeft = Canvas.GetLeft(adornedElement);
-                    if (double.IsNaN(currentLeft)) currentLeft = 0.0;
-                    Canvas.SetLeft(adornedElement, currentLeft + (adornedElement.Width - newWidth));
-                    adornedElement.Width = newWidth;
-                }
-                if (newHeight > 10)
-                {
-                    double currentTop = Canvas.GetTop(adornedElement);
-                    if (double.IsNaN(currentTop)) currentTop = 0.0;
-                    Canvas.SetTop(adornedElement, currentTop + (adornedElement.Height - newHeight));
-                    adornedElement.Height = newHeight;
-                }
-            }
-
-            // Update properties panel in real-time during resize
-            mainWindow?.UpdatePropertiesPanel();
         }
 
         private void HandleTop(object sender, DragDeltaEventArgs e)
         {
             if (adornedElement == null) return;
 
-            // Try to delegate to IElementControl if registered
+            // Delegate to IElementControl if registered
             var control = mainWindow?.GetElementControl(adornedElement);
-            if (control != null)
+            if (control != null && !control.UsesEndpoints)
             {
-                // UsesEndpoints elements ignore edge handles
-                if (!control.UsesEndpoints)
-                {
-                    control.HandleResize(ResizeHandle.TopCenter, e.HorizontalChange, e.VerticalChange);
-                    InvalidateArrange();
-                    mainWindow?.UpdatePropertiesPanel();
-                }
-                return;
+                control.HandleResize(ResizeHandle.TopCenter, e.HorizontalChange, e.VerticalChange);
+                InvalidateArrange();
+                mainWindow?.UpdatePropertiesPanel();
             }
-
-            // Fallback: For Line elements, only topLeft and bottomRight handles should work
-            if (adornedElement is Line) return;
-
-            double newHeight = adornedElement.Height - e.VerticalChange;
-            double newWidth = adornedElement.Width;
-
-            // If Shift is pressed, maintain aspect ratio
-            if (Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift))
-            {
-                double aspectRatio = adornedElement.Width / adornedElement.Height;
-                newWidth = newHeight * aspectRatio;
-            }
-
-            if (newWidth > 10 && newHeight > 10)
-            {
-                double currentTop = Canvas.GetTop(adornedElement);
-                if (double.IsNaN(currentTop)) currentTop = 0.0;
-                Canvas.SetTop(adornedElement, currentTop + (adornedElement.Height - newHeight));
-                adornedElement.Height = newHeight;
-                adornedElement.Width = newWidth;
-            }
-
-            // Update properties panel in real-time during resize
-            mainWindow?.UpdatePropertiesPanel();
         }
 
         private void HandleTopRight(object sender, DragDeltaEventArgs e)
         {
             if (adornedElement == null) return;
 
-            // Try to delegate to IElementControl if registered
+            // Delegate to IElementControl if registered
             var control = mainWindow?.GetElementControl(adornedElement);
-            if (control != null)
+            if (control != null && !control.UsesEndpoints)
             {
-                // UsesEndpoints elements ignore edge handles
-                if (!control.UsesEndpoints)
-                {
-                    control.HandleResize(ResizeHandle.TopRight, e.HorizontalChange, e.VerticalChange);
-                    InvalidateArrange();
-                    mainWindow?.UpdatePropertiesPanel();
-                }
-                return;
+                control.HandleResize(ResizeHandle.TopRight, e.HorizontalChange, e.VerticalChange);
+                InvalidateArrange();
+                mainWindow?.UpdatePropertiesPanel();
             }
-
-            // Fallback: For Line elements, only topLeft and bottomRight handles should work
-            if (adornedElement is Line) return;
-
-            double newWidth = adornedElement.Width + e.HorizontalChange;
-            double newHeight = adornedElement.Height - e.VerticalChange;
-
-            // If Shift is pressed, maintain aspect ratio
-            if (Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift))
-            {
-                double aspectRatio = adornedElement.Width / adornedElement.Height;
-                // Use the larger change to determine the new size
-                if (Math.Abs(e.HorizontalChange) > Math.Abs(e.VerticalChange))
-                {
-                    newHeight = newWidth / aspectRatio;
-                }
-                else
-                {
-                    newWidth = newHeight * aspectRatio;
-                }
-            }
-
-            if (newWidth > 10)
-            {
-                adornedElement.Width = newWidth;
-            }
-            if (newHeight > 10)
-            {
-                double currentTop = Canvas.GetTop(adornedElement);
-                if (double.IsNaN(currentTop)) currentTop = 0.0;
-                Canvas.SetTop(adornedElement, currentTop + (adornedElement.Height - newHeight));
-                adornedElement.Height = newHeight;
-            }
-
-            // Update properties panel in real-time during resize
-            mainWindow?.UpdatePropertiesPanel();
         }
 
         private void HandleLeft(object sender, DragDeltaEventArgs e)
         {
             if (adornedElement == null) return;
 
-            // Try to delegate to IElementControl if registered
+            // Delegate to IElementControl if registered
             var control = mainWindow?.GetElementControl(adornedElement);
-            if (control != null)
+            if (control != null && !control.UsesEndpoints)
             {
-                // UsesEndpoints elements ignore edge handles
-                if (!control.UsesEndpoints)
-                {
-                    control.HandleResize(ResizeHandle.MiddleLeft, e.HorizontalChange, e.VerticalChange);
-                    InvalidateArrange();
-                    mainWindow?.UpdatePropertiesPanel();
-                }
-                return;
+                control.HandleResize(ResizeHandle.MiddleLeft, e.HorizontalChange, e.VerticalChange);
+                InvalidateArrange();
+                mainWindow?.UpdatePropertiesPanel();
             }
-
-            // Fallback: For Line elements, only topLeft and bottomRight handles should work
-            if (adornedElement is Line) return;
-
-            double newWidth = adornedElement.Width - e.HorizontalChange;
-            double newHeight = adornedElement.Height;
-
-            // If Shift is pressed, maintain aspect ratio
-            if (Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift))
-            {
-                double aspectRatio = adornedElement.Width / adornedElement.Height;
-                newHeight = newWidth / aspectRatio;
-            }
-
-            if (newWidth > 10 && newHeight > 10)
-            {
-                double currentLeft = Canvas.GetLeft(adornedElement);
-                if (double.IsNaN(currentLeft)) currentLeft = 0.0;
-                Canvas.SetLeft(adornedElement, currentLeft + (adornedElement.Width - newWidth));
-                adornedElement.Width = newWidth;
-                adornedElement.Height = newHeight;
-            }
-
-            // Update properties panel in real-time during resize
-            mainWindow?.UpdatePropertiesPanel();
         }
 
         private void HandleRight(object sender, DragDeltaEventArgs e)
         {
             if (adornedElement == null) return;
 
-            // Try to delegate to IElementControl if registered
+            // Delegate to IElementControl if registered
             var control = mainWindow?.GetElementControl(adornedElement);
-            if (control != null)
+            if (control != null && !control.UsesEndpoints)
             {
-                // UsesEndpoints elements ignore edge handles
-                if (!control.UsesEndpoints)
-                {
-                    control.HandleResize(ResizeHandle.MiddleRight, e.HorizontalChange, e.VerticalChange);
-                    InvalidateArrange();
-                    mainWindow?.UpdatePropertiesPanel();
-                }
-                return;
+                control.HandleResize(ResizeHandle.MiddleRight, e.HorizontalChange, e.VerticalChange);
+                InvalidateArrange();
+                mainWindow?.UpdatePropertiesPanel();
             }
-
-            // Fallback: For Line elements, only topLeft and bottomRight handles should work
-            if (adornedElement is Line) return;
-
-            double newWidth = adornedElement.Width + e.HorizontalChange;
-            double newHeight = adornedElement.Height;
-
-            // If Shift is pressed, maintain aspect ratio
-            if (Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift))
-            {
-                double aspectRatio = adornedElement.Width / adornedElement.Height;
-                newHeight = newWidth / aspectRatio;
-            }
-
-            if (newWidth > 10 && newHeight > 10)
-            {
-                adornedElement.Width = newWidth;
-                adornedElement.Height = newHeight;
-            }
-
-            // Update properties panel in real-time during resize
-            mainWindow?.UpdatePropertiesPanel();
         }
 
         private void HandleBottomLeft(object sender, DragDeltaEventArgs e)
         {
             if (adornedElement == null) return;
 
-            // Try to delegate to IElementControl if registered
+            // Delegate to IElementControl if registered
             var control = mainWindow?.GetElementControl(adornedElement);
-            if (control != null)
+            if (control != null && !control.UsesEndpoints)
             {
-                // UsesEndpoints elements ignore edge handles
-                if (!control.UsesEndpoints)
-                {
-                    control.HandleResize(ResizeHandle.BottomLeft, e.HorizontalChange, e.VerticalChange);
-                    InvalidateArrange();
-                    mainWindow?.UpdatePropertiesPanel();
-                }
-                return;
+                control.HandleResize(ResizeHandle.BottomLeft, e.HorizontalChange, e.VerticalChange);
+                InvalidateArrange();
+                mainWindow?.UpdatePropertiesPanel();
             }
-
-            // Fallback: For Line elements, only topLeft and bottomRight handles should work
-            if (adornedElement is Line) return;
-
-            double newWidth = adornedElement.Width - e.HorizontalChange;
-            double newHeight = adornedElement.Height + e.VerticalChange;
-
-            // If Shift is pressed, maintain aspect ratio
-            if (Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift))
-            {
-                double aspectRatio = adornedElement.Width / adornedElement.Height;
-                // Use the larger change to determine the new size
-                if (Math.Abs(e.HorizontalChange) > Math.Abs(e.VerticalChange))
-                {
-                    newHeight = newWidth / aspectRatio;
-                }
-                else
-                {
-                    newWidth = newHeight * aspectRatio;
-                }
-            }
-
-            if (newWidth > 10)
-            {
-                double currentLeft = Canvas.GetLeft(adornedElement);
-                if (double.IsNaN(currentLeft)) currentLeft = 0.0;
-                Canvas.SetLeft(adornedElement, currentLeft + (adornedElement.Width - newWidth));
-                adornedElement.Width = newWidth;
-            }
-            if (newHeight > 10)
-            {
-                adornedElement.Height = newHeight;
-            }
-
-            // Update properties panel in real-time during resize
-            mainWindow?.UpdatePropertiesPanel();
         }
 
         private void HandleBottom(object sender, DragDeltaEventArgs e)
         {
             if (adornedElement == null) return;
 
-            // Try to delegate to IElementControl if registered
+            // Delegate to IElementControl if registered
             var control = mainWindow?.GetElementControl(adornedElement);
-            if (control != null)
+            if (control != null && !control.UsesEndpoints)
             {
-                // UsesEndpoints elements ignore edge handles
-                if (!control.UsesEndpoints)
-                {
-                    control.HandleResize(ResizeHandle.BottomCenter, e.HorizontalChange, e.VerticalChange);
-                    InvalidateArrange();
-                    mainWindow?.UpdatePropertiesPanel();
-                }
-                return;
+                control.HandleResize(ResizeHandle.BottomCenter, e.HorizontalChange, e.VerticalChange);
+                InvalidateArrange();
+                mainWindow?.UpdatePropertiesPanel();
             }
-
-            // Fallback: For Line elements, only topLeft and bottomRight handles should work
-            if (adornedElement is Line) return;
-
-            double newHeight = adornedElement.Height + e.VerticalChange;
-            double newWidth = adornedElement.Width;
-
-            // If Shift is pressed, maintain aspect ratio
-            if (Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift))
-            {
-                double aspectRatio = adornedElement.Width / adornedElement.Height;
-                newWidth = newHeight * aspectRatio;
-            }
-
-            if (newWidth > 10 && newHeight > 10)
-            {
-                adornedElement.Height = newHeight;
-                adornedElement.Width = newWidth;
-            }
-
-            // Update properties panel in real-time during resize
-            mainWindow?.UpdatePropertiesPanel();
         }
     }
 }

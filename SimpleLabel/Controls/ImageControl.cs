@@ -268,7 +268,93 @@ public class ImageControl : ElementControlBase
     /// <param name="newValue">The new value for the property.</param>
     public override void ApplyPropertyChanges(string propertyName, object newValue)
     {
-        throw new NotImplementedException("Property panel integration will be implemented in Phase 6.");
+        bool requiresFilterReapply = false;
+
+        switch (propertyName)
+        {
+            case "X":
+                var newX = Convert.ToDouble(newValue) * MM_TO_PIXELS;
+                SetCanvasLeft(newX);
+                _canvasElement.X = newX;
+                break;
+
+            case "Y":
+                var newY = Convert.ToDouble(newValue) * MM_TO_PIXELS;
+                SetCanvasTop(newY);
+                _canvasElement.Y = newY;
+                break;
+
+            case "Width":
+                var newWidth = Convert.ToDouble(newValue) * MM_TO_PIXELS;
+                _image.Width = newWidth;
+                _canvasElement.Width = newWidth;
+                break;
+
+            case "Height":
+                var newHeight = Convert.ToDouble(newValue) * MM_TO_PIXELS;
+                _image.Height = newHeight;
+                _canvasElement.Height = newHeight;
+                break;
+
+            case "MonochromeEnabled":
+                _canvasElement.MonochromeEnabled = Convert.ToBoolean(newValue);
+                requiresFilterReapply = true;
+                break;
+
+            case "Algorithm":
+                if (newValue is int algorithmIndex)
+                {
+                    _canvasElement.MonochromeAlgorithm = algorithmIndex switch
+                    {
+                        1 => "FloydSteinberg",
+                        2 => "Ordered",
+                        3 => "Atkinson",
+                        _ => "Threshold"
+                    };
+                }
+                else if (newValue is string algorithmName)
+                {
+                    _canvasElement.MonochromeAlgorithm = algorithmName;
+                }
+                requiresFilterReapply = true;
+                break;
+
+            case "Threshold":
+                _canvasElement.Threshold = Convert.ToByte(newValue);
+                requiresFilterReapply = true;
+                break;
+
+            case "Brightness":
+                _canvasElement.Brightness = Convert.ToDouble(newValue);
+                requiresFilterReapply = true;
+                break;
+
+            case "Contrast":
+                _canvasElement.Contrast = Convert.ToDouble(newValue);
+                requiresFilterReapply = true;
+                break;
+
+            case "Invert":
+                _canvasElement.InvertColors = Convert.ToBoolean(newValue);
+                requiresFilterReapply = true;
+                break;
+
+            default:
+                // Unknown property - ignore silently
+                return;
+        }
+
+        // Apply monochrome filter if needed
+        if (requiresFilterReapply && _mainWindow != null && _canvasElement.MonochromeEnabled == true)
+        {
+            _mainWindow.ApplyImageFilter(_image);
+        }
+
+        // Mark document as dirty
+        if (_mainWindow != null)
+        {
+            _mainWindow.isDirty = true;
+        }
     }
 
     #endregion

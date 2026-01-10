@@ -271,9 +271,10 @@ public class ShapeControl : ElementControlBase
             SetCanvasTop(GetCanvasTop() + positionDeltaY);
         }
 
-        // Update Width/Height for hit-testing (use new bounds)
-        polygon.Width = newWidth;
-        polygon.Height = newHeight;
+        // Update Width/Height for hit-testing (add stroke padding like CreatePolygonElement)
+        const double strokePadding = 2;
+        polygon.Width = newWidth + strokePadding;
+        polygon.Height = newHeight + strokePadding;
     }
 
     #endregion
@@ -444,7 +445,191 @@ public class ShapeControl : ElementControlBase
     /// <param name="newValue">The new value for the property.</param>
     public override void ApplyPropertyChanges(string propertyName, object newValue)
     {
-        throw new NotImplementedException("Property panel integration will be implemented in Phase 6.");
+        const double minSize = 10.0;
+
+        switch (propertyName)
+        {
+            case "X":
+                var newX = Convert.ToDouble(newValue) * MM_TO_PIXELS;
+                SetCanvasLeft(newX);
+                _canvasElement.X = newX;
+                break;
+
+            case "Y":
+                var newY = Convert.ToDouble(newValue) * MM_TO_PIXELS;
+                SetCanvasTop(newY);
+                _canvasElement.Y = newY;
+                break;
+
+            case "Width":
+                var newWidth = Math.Max(Convert.ToDouble(newValue) * MM_TO_PIXELS, minSize);
+                if (_shape is Polygon polygon)
+                {
+                    ScalePolygonToSize(polygon, newWidth, null);
+                }
+                else
+                {
+                    _shape.Width = newWidth;
+                }
+                _canvasElement.Width = newWidth;
+                break;
+
+            case "Height":
+                var newHeight = Math.Max(Convert.ToDouble(newValue) * MM_TO_PIXELS, minSize);
+                if (_shape is Polygon poly)
+                {
+                    ScalePolygonToSize(poly, null, newHeight);
+                }
+                else
+                {
+                    _shape.Height = newHeight;
+                }
+                _canvasElement.Height = newHeight;
+                break;
+
+            case "FillColor":
+                var fillColor = (Color)newValue;
+                _shape.Fill = new SolidColorBrush(fillColor);
+                _canvasElement.FillColor = fillColor.ToString();
+                break;
+
+            case "StrokeColor":
+                var strokeColor = (Color)newValue;
+                _shape.Stroke = new SolidColorBrush(strokeColor);
+                _canvasElement.StrokeColor = strokeColor.ToString();
+                break;
+
+            case "StrokeThickness":
+                var thickness = Convert.ToDouble(newValue);
+                _shape.StrokeThickness = thickness;
+                _canvasElement.StrokeThickness = thickness;
+                break;
+
+            case "RadiusX":
+                if (_shape is Rectangle rectX)
+                {
+                    rectX.RadiusX = Convert.ToDouble(newValue);
+                    _canvasElement.RadiusX = rectX.RadiusX;
+                }
+                break;
+
+            case "RadiusY":
+                if (_shape is Rectangle rectY)
+                {
+                    rectY.RadiusY = Convert.ToDouble(newValue);
+                    _canvasElement.RadiusY = rectY.RadiusY;
+                }
+                break;
+
+            case "DashPattern":
+                var patternIndex = Convert.ToInt32(newValue);
+                _shape.StrokeDashArray = GetDashArrayFromIndex(patternIndex);
+                _canvasElement.StrokeDashPattern = GetDashPatternName(patternIndex);
+                break;
+
+            case "GradientAngle":
+                if (_shape.Fill is LinearGradientBrush gradientBrush)
+                {
+                    var angle = Convert.ToDouble(newValue);
+                    UpdateGradientAngle(gradientBrush, angle);
+                    _canvasElement.GradientAngle = angle;
+                }
+                break;
+
+            default:
+                // Unknown property - ignore silently
+                return;
+        }
+
+        // Mark document as dirty
+        if (_mainWindow != null)
+        {
+            _mainWindow.isDirty = true;
+        }
+    }
+
+    /// <summary>
+    /// Gets a StrokeDashArray from a dash pattern index.
+    /// </summary>
+    private DoubleCollection? GetDashArrayFromIndex(int index)
+    {
+        return index switch
+        {
+            1 => new DoubleCollection { 2.0, 2.0 },       // Dash
+            2 => new DoubleCollection { 1.0, 2.0 },       // Dot
+            3 => new DoubleCollection { 2.0, 2.0, 1.0, 2.0 }, // DashDot
+            _ => null                                      // Solid
+        };
+    }
+
+    /// <summary>
+    /// Gets the dash pattern name from an index.
+    /// </summary>
+    private string GetDashPatternName(int index)
+    {
+        return index switch
+        {
+            1 => "Dash",
+            2 => "Dot",
+            3 => "DashDot",
+            _ => "Solid"
+        };
+    }
+
+    /// <summary>
+    /// Scales a polygon to a new target size.
+    /// </summary>
+    private void ScalePolygonToSize(Polygon polygon, double? targetWidth, double? targetHeight)
+    {
+        if (polygon.Points.Count == 0) return;
+
+        // Calculate current bounds
+        double minX = double.MaxValue, maxX = double.MinValue;
+        double minY = double.MaxValue, maxY = double.MinValue;
+        foreach (var p in polygon.Points)
+        {
+            if (p.X < minX) minX = p.X;
+            if (p.X > maxX) maxX = p.X;
+            if (p.Y < minY) minY = p.Y;
+            if (p.Y > maxY) maxY = p.Y;
+        }
+
+        double currentWidth = maxX - minX;
+        double currentHeight = maxY - minY;
+        if (currentWidth < 1) currentWidth = 1;
+        if (currentHeight < 1) currentHeight = 1;
+
+        double scaleX = targetWidth.HasValue ? targetWidth.Value / currentWidth : 1.0;
+        double scaleY = targetHeight.HasValue ? targetHeight.Value / currentHeight : 1.0;
+
+        // Scale all points
+        var newPoints = new PointCollection();
+        foreach (var p in polygon.Points)
+        {
+            double newPX = minX + (p.X - minX) * scaleX;
+            double newPY = minY + (p.Y - minY) * scaleY;
+            newPoints.Add(new Point(newPX, newPY));
+        }
+        polygon.Points = newPoints;
+
+        // Update polygon Width/Height (add stroke padding like CreatePolygonElement)
+        const double strokePadding = 2;
+        if (targetWidth.HasValue) polygon.Width = targetWidth.Value + strokePadding;
+        if (targetHeight.HasValue) polygon.Height = targetHeight.Value + strokePadding;
+    }
+
+    /// <summary>
+    /// Updates the gradient angle of a LinearGradientBrush.
+    /// </summary>
+    private void UpdateGradientAngle(LinearGradientBrush brush, double angle)
+    {
+        double radians = angle * Math.PI / 180.0;
+        double cos = Math.Cos(radians);
+        double sin = Math.Sin(radians);
+
+        // Calculate start and end points for the gradient
+        brush.StartPoint = new Point(0.5 - cos / 2, 0.5 - sin / 2);
+        brush.EndPoint = new Point(0.5 + cos / 2, 0.5 + sin / 2);
     }
 
     #endregion

@@ -140,8 +140,59 @@ public class LineControl : ElementControlBase
     /// <param name="newValue">The new value for the property.</param>
     public override void ApplyPropertyChanges(string propertyName, object newValue)
     {
-        // TODO: Implement in Phase 6 when integrating with MainWindow
-        throw new NotImplementedException("Property panel integration will be completed in Phase 6.");
+        // Get current absolute endpoints
+        double x1 = _canvasElement.X;
+        double y1 = _canvasElement.Y;
+        double x2 = _canvasElement.X2 ?? x1;
+        double y2 = _canvasElement.Y2 ?? y1;
+
+        switch (propertyName)
+        {
+            case "X1":
+            case "X":
+                // newValue is in mm, convert to pixels
+                x1 = Convert.ToDouble(newValue) * MM_TO_PIXELS;
+                UpdateCanvasFromEndpoints(x1, y1, x2, y2);
+                break;
+
+            case "Y1":
+            case "Y":
+                y1 = Convert.ToDouble(newValue) * MM_TO_PIXELS;
+                UpdateCanvasFromEndpoints(x1, y1, x2, y2);
+                break;
+
+            case "X2":
+                x2 = Convert.ToDouble(newValue) * MM_TO_PIXELS;
+                UpdateCanvasFromEndpoints(x1, y1, x2, y2);
+                break;
+
+            case "Y2":
+                y2 = Convert.ToDouble(newValue) * MM_TO_PIXELS;
+                UpdateCanvasFromEndpoints(x1, y1, x2, y2);
+                break;
+
+            case "StrokeColor":
+                var color = (System.Windows.Media.Color)newValue;
+                _line.Stroke = new System.Windows.Media.SolidColorBrush(color);
+                _canvasElement.StrokeColor = color.ToString();
+                break;
+
+            case "StrokeThickness":
+                var thickness = Convert.ToDouble(newValue);
+                _line.StrokeThickness = thickness;
+                _canvasElement.StrokeThickness = thickness;
+                break;
+
+            default:
+                // Unknown property - ignore silently
+                return;
+        }
+
+        // Mark document as dirty
+        if (_mainWindow != null)
+        {
+            _mainWindow.isDirty = true;
+        }
     }
 
     #region Endpoint Helpers
@@ -247,11 +298,17 @@ public class LineControl : ElementControlBase
     /// <param name="verticalChange">The vertical movement delta.</param>
     public override void HandleResize(ResizeHandle handle, double horizontalChange, double verticalChange)
     {
-        // Get current absolute endpoints from CanvasElement
-        double x1 = _canvasElement.X;
-        double y1 = _canvasElement.Y;
-        double x2 = _canvasElement.X2 ?? x1;
-        double y2 = _canvasElement.Y2 ?? y1;
+        // Calculate current absolute endpoints from canvas position and relative line coordinates
+        // This is more reliable than reading from CanvasElement, which may not be in sync
+        double canvasLeft = Canvas.GetLeft(_lineCanvas);
+        double canvasTop = Canvas.GetTop(_lineCanvas);
+        if (double.IsNaN(canvasLeft)) canvasLeft = 0.0;
+        if (double.IsNaN(canvasTop)) canvasTop = 0.0;
+
+        double x1 = canvasLeft + _line.X1;
+        double y1 = canvasTop + _line.Y1;
+        double x2 = canvasLeft + _line.X2;
+        double y2 = canvasTop + _line.Y2;
 
         switch (handle)
         {

@@ -15,6 +15,8 @@ using Microsoft.Win32;
 using SimpleLabel.Models;
 using SimpleLabel.Commands;
 using SimpleLabel.Controls;
+using SimpleLabel.Controllers;
+using SimpleLabel.Services;
 using WpfColor = System.Windows.Media.Color;
 using FormsColor = System.Drawing.Color;
 
@@ -32,13 +34,11 @@ public partial class MainWindow : Window
     private Point dragInitialEndPosition; // For Line elements - stores X2/Y2
     private UIElement? selectedElement = null;
     private string? currentFilePath = null;
-    private bool isDirty = false;
+    internal bool isDirty = false;
     private readonly Commands.CommandManager commandManager = new();
 
-    // Properties panel initial values for undo/redo
-    private double initialPropertyValue;
-    private string? initialStringValue;
-    private bool initialBoolValue;
+    // Property panel controller for handling property changes
+    private PropertyPanelController? _propertyPanelController;
 
     // Grid/Snap settings
     private bool snapToGrid = true;
@@ -60,6 +60,14 @@ public partial class MainWindow : Window
 
         // Handle window closing to prompt for unsaved changes
         Closing += Window_Closing;
+
+        // Initialize property panel controller
+        _propertyPanelController = new PropertyPanelController(
+            commandManager,
+            UpdatePropertiesPanel,
+            UpdateUndoRedoButtons,
+            () => isDirty = true,
+            GetElementControl);
 
         // Initialize status bar display
         UpdateStatusBar();
@@ -130,6 +138,13 @@ public partial class MainWindow : Window
 
         // Select new element
         selectedElement = element;
+
+        // Sync with property panel controller
+        if (_propertyPanelController != null)
+        {
+            _propertyPanelController.SelectedElement = element;
+        }
+
         if (selectedElement != null)
         {
             var layer = AdornerLayer.GetAdornerLayer(selectedElement);
@@ -194,7 +209,7 @@ public partial class MainWindow : Window
             propertyWidth.IsEnabled = true;
             propertyHeight.IsEnabled = true;
 
-            // Try to delegate to IElementControl if registered
+            // Delegate to IElementControl if registered
             var elementControl = GetElementControl(selectedElement);
             if (elementControl != null)
             {
@@ -202,380 +217,15 @@ public partial class MainWindow : Window
                 return;
             }
 
-            // Legacy fallback: Check if element is TextBlock for text formatting controls
-            if (selectedElement is TextBlock textBlock)
-            {
-                groupTextFormatting.Visibility = Visibility.Visible;
-                groupShapeStyling.Visibility = Visibility.Collapsed;
-                groupImageFilters.Visibility = Visibility.Collapsed;
-
-                // Enable and populate text formatting controls
-                propertyText.Text = textBlock.Text;
-                propertyFontFamily.SelectedItem = textBlock.FontFamily.Source;
-
-                // Find the closest matching font size item
-                double currentFontSize = textBlock.FontSize;
-                ComboBoxItem? bestMatch = null;
-                double smallestDifference = double.MaxValue;
-
-                foreach (var item in propertyFontSize.Items)
-                {
-                    if (item is ComboBoxItem cbi && cbi.Tag != null)
-                    {
-                        if (double.TryParse(cbi.Tag.ToString(), out double fontSize))
-                        {
-                            double difference = Math.Abs(fontSize - currentFontSize);
-                            if (difference < smallestDifference)
-                            {
-                                smallestDifference = difference;
-                                bestMatch = cbi;
-                            }
-                        }
-                    }
-                }
-
-                if (bestMatch != null && smallestDifference < 0.5)
-                {
-                    propertyFontSize.SelectedItem = bestMatch;
-                }
-                else
-                {
-                    // No close match, calculate and show mm equivalent
-                    // Approximate actual character height: pt * 0.265 ≈ mm
-                    // (accounts for cap height being ~70% of font size)
-                    double mm = currentFontSize * 0.265;
-                    propertyFontSize.SelectedItem = null;
-                    propertyFontSize.Text = $"{mm:F0}mm ({currentFontSize:F0}pt)";
-                }
-
-                // Get foreground color and set preview
-                if (textBlock.Foreground is SolidColorBrush brush)
-                {
-                    propertyColorPreview.Fill = brush;
-                }
-
-                // Set alignment
-                propertyAlignment.SelectedIndex = textBlock.TextAlignment switch
-                {
-                    TextAlignment.Left => 0,
-                    TextAlignment.Center => 1,
-                    TextAlignment.Right => 2,
-                    _ => 0
-                };
-
-                // Set bold and italic
-                propertyBold.IsChecked = textBlock.FontWeight == FontWeights.Bold;
-                propertyItalic.IsChecked = textBlock.FontStyle == FontStyles.Italic;
-
-                // Enable controls
-                propertyText.IsEnabled = true;
-                propertyFontFamily.IsEnabled = true;
-                propertyFontSize.IsEnabled = true;
-                propertyColorButton.IsEnabled = true;
-                propertyAlignment.IsEnabled = true;
-                propertyBold.IsEnabled = true;
-                propertyItalic.IsEnabled = true;
-            }
-            else if (selectedElement is Shape shape)
-            {
-                groupTextFormatting.Visibility = Visibility.Collapsed;
-                groupShapeStyling.Visibility = Visibility.Visible;
-                groupImageFilters.Visibility = Visibility.Collapsed;
-
-                // Basic shape styling controls
-                if (shape.Fill is SolidColorBrush fillBrush)
-                {
-                    propertyFillColorPreview.Fill = fillBrush;
-                }
-                if (shape.Stroke is SolidColorBrush strokeBrush)
-                {
-                    propertyStrokeColorPreview.Fill = strokeBrush;
-                }
-                propertyStrokeThickness.Value = shape.StrokeThickness;
-
-                // Enable basic controls
-                propertyFillColorButton.IsEnabled = true;
-                propertyStrokeColorButton.IsEnabled = true;
-                propertyStrokeThickness.IsEnabled = true;
-
-                // Rectangle-specific: Corner radius
-                bool isRectangle = shape is Rectangle;
-                labelRadiusX.Visibility = isRectangle ? Visibility.Visible : Visibility.Collapsed;
-                propertyRadiusX.Visibility = isRectangle ? Visibility.Visible : Visibility.Collapsed;
-                labelRadiusY.Visibility = isRectangle ? Visibility.Visible : Visibility.Collapsed;
-                propertyRadiusY.Visibility = isRectangle ? Visibility.Visible : Visibility.Collapsed;
-
-                if (shape is Rectangle rect)
-                {
-                    propertyRadiusX.Value = rect.RadiusX;
-                    propertyRadiusX.IsEnabled = true;
-                    propertyRadiusY.Value = rect.RadiusY;
-                    propertyRadiusY.IsEnabled = true;
-                }
-
-                // Polygon-specific: Make Width/Height read-only (calculated from bounds)
-                if (shape is Polygon polygon)
-                {
-                    // Calculate bounds from points
-                    if (polygon.Points.Count > 0)
-                    {
-                        double minX = polygon.Points.Min(p => p.X);
-                        double maxX = polygon.Points.Max(p => p.X);
-                        double minY = polygon.Points.Min(p => p.Y);
-                        double maxY = polygon.Points.Max(p => p.Y);
-
-                        width = maxX - minX;
-                        height = maxY - minY;
-
-                        propertyWidth.Value = Math.Round(width * PIXELS_TO_MM, 2);
-                        propertyHeight.Value = Math.Round(height * PIXELS_TO_MM, 2);
-                    }
-
-                    // Make Width/Height read-only for polygons (geometry defined by points)
-                    propertyWidth.IsEnabled = false;
-                    propertyHeight.IsEnabled = false;
-                }
-
-                // Stroke dash pattern
-                propertyStrokeDashPattern.SelectedIndex = DetectDashPatternIndex(shape.StrokeDashArray);
-                propertyStrokeDashPattern.IsEnabled = true;
-
-                // Gradient fill
-                bool hasGradient = shape.Fill is LinearGradientBrush;
-                propertyUseGradientFill.IsChecked = hasGradient;
-                propertyUseGradientFill.IsEnabled = true;
-
-                if (hasGradient)
-                {
-                    var gradientBrush = (LinearGradientBrush)shape.Fill;
-                    panelGradientControls.Visibility = Visibility.Visible;
-
-                    if (gradientBrush.GradientStops.Count >= 2)
-                    {
-                        propertyGradientStartPreview.Fill = new SolidColorBrush(gradientBrush.GradientStops[0].Color);
-                        propertyGradientEndPreview.Fill = new SolidColorBrush(gradientBrush.GradientStops[^1].Color);
-                    }
-
-                    double angle = CalculateGradientAngle(gradientBrush);
-                    propertyGradientAngle.Value = angle;
-                    propertyGradientAngleValue.Text = $"{angle:F0}°";
-
-                    propertyGradientStartButton.IsEnabled = true;
-                    propertyGradientEndButton.IsEnabled = true;
-                    propertyGradientAngle.IsEnabled = true;
-                }
-                else
-                {
-                    panelGradientControls.Visibility = Visibility.Collapsed;
-                }
-            }
-            else if (selectedElement is Image image)
-            {
-                groupTextFormatting.Visibility = Visibility.Collapsed;
-                groupShapeStyling.Visibility = Visibility.Collapsed;
-                groupImageFilters.Visibility = Visibility.Visible;
-
-                // Enable and populate image filter controls
-                if (image.Tag is Tuple<CanvasElement, BitmapSource> tuple)
-                {
-                    var canvasElement = tuple.Item1;
-                    bool monochromeEnabled = canvasElement.MonochromeEnabled ?? false;
-
-                    propertyMonochromeEnabled.IsChecked = monochromeEnabled;
-                    panelMonochromeControls.Visibility = monochromeEnabled ? Visibility.Visible : Visibility.Collapsed;
-
-                    // Algorithm selection
-                    string algorithm = canvasElement.MonochromeAlgorithm ?? "Threshold";
-                    propertyAlgorithm.SelectedIndex = algorithm switch
-                    {
-                        "FloydSteinberg" => 1,
-                        "Ordered" => 2,
-                        "Atkinson" => 3,
-                        _ => 0
-                    };
-
-                    // Threshold
-                    propertyThresholdSlider.Value = canvasElement.Threshold ?? 128;
-                    propertyThresholdValue.Text = (canvasElement.Threshold ?? 128).ToString();
-
-                    // Brightness
-                    propertyBrightness.Value = canvasElement.Brightness ?? 0;
-                    propertyBrightnessValue.Text = (canvasElement.Brightness ?? 0).ToString("F0");
-
-                    // Contrast
-                    propertyContrast.Value = canvasElement.Contrast ?? 0;
-                    propertyContrastValue.Text = (canvasElement.Contrast ?? 0).ToString("F0");
-
-                    // Invert
-                    propertyInvert.IsChecked = canvasElement.InvertColors ?? false;
-                }
-                else
-                {
-                    propertyMonochromeEnabled.IsChecked = false;
-                    panelMonochromeControls.Visibility = Visibility.Collapsed;
-                    propertyAlgorithm.SelectedIndex = 0;
-                    propertyThresholdSlider.Value = 128;
-                    propertyThresholdValue.Text = "128";
-                    propertyBrightness.Value = 0;
-                    propertyBrightnessValue.Text = "0";
-                    propertyContrast.Value = 0;
-                    propertyContrastValue.Text = "0";
-                    propertyInvert.IsChecked = false;
-                }
-
-                // Enable controls
-                propertyMonochromeEnabled.IsEnabled = true;
-                propertyAlgorithm.IsEnabled = true;
-                propertyThresholdSlider.IsEnabled = true;
-                propertyBrightness.IsEnabled = true;
-                propertyContrast.IsEnabled = true;
-                propertyInvert.IsEnabled = true;
-            }
-            else if (selectedElement is Canvas lineCanvas && lineCanvas.Tag is Tuple<Line, CanvasElement>)
-            {
-                // Line element wrapped in Canvas
-                var lineData = (Tuple<Line, CanvasElement>)lineCanvas.Tag;
-                var line = lineData.Item1;
-                var canvasElement = lineData.Item2;
-
-                groupTextFormatting.Visibility = Visibility.Collapsed;
-                groupShapeStyling.Visibility = Visibility.Visible;
-                groupImageFilters.Visibility = Visibility.Collapsed;
-                groupArrowControls.Visibility = Visibility.Collapsed;
-
-                // Get canvas position
-                double canvasLeft = Canvas.GetLeft(lineCanvas);
-                double canvasTop = Canvas.GetTop(lineCanvas);
-                if (double.IsNaN(canvasLeft)) canvasLeft = 0.0;
-                if (double.IsNaN(canvasTop)) canvasTop = 0.0;
-
-                // Calculate absolute coordinates
-                double x1 = canvasLeft + line.X1;
-                double y1 = canvasTop + line.Y1;
-                double x2 = canvasLeft + line.X2;
-                double y2 = canvasTop + line.Y2;
-
-                // Show X1, Y1 (as X, Y), X2, Y2
-                propertyX.Value = Math.Round(x1 * PIXELS_TO_MM, 2);
-                propertyY.Value = Math.Round(y1 * PIXELS_TO_MM, 2);
-
-                // Show X2, Y2 controls
-                labelX2.Visibility = Visibility.Visible;
-                propertyX2.Visibility = Visibility.Visible;
-                labelY2.Visibility = Visibility.Visible;
-                propertyY2.Visibility = Visibility.Visible;
-
-                propertyX2.Value = Math.Round(line.X2 * PIXELS_TO_MM, 2);
-                propertyY2.Value = Math.Round(line.Y2 * PIXELS_TO_MM, 2);
-                propertyX2.IsEnabled = true;
-                propertyY2.IsEnabled = true;
-
-                // Hide Width/Height (not applicable for Line)
-                propertyWidth.IsEnabled = false;
-                propertyHeight.IsEnabled = false;
-
-                // Show stroke color and thickness
-                if (line.Stroke is SolidColorBrush strokeBrush)
-                {
-                    propertyStrokeColorPreview.Fill = strokeBrush;
-                }
-                propertyStrokeThickness.Value = line.StrokeThickness;
-
-                // Enable stroke controls
-                propertyStrokeColorButton.IsEnabled = true;
-                propertyStrokeThickness.IsEnabled = true;
-
-                // Hide fill color and other shape-specific controls
-                propertyFillColorButton.IsEnabled = false;
-                propertyStrokeDashPattern.IsEnabled = false;
-                propertyUseGradientFill.IsEnabled = false;
-                labelRadiusX.Visibility = Visibility.Collapsed;
-                propertyRadiusX.Visibility = Visibility.Collapsed;
-                labelRadiusY.Visibility = Visibility.Collapsed;
-                propertyRadiusY.Visibility = Visibility.Collapsed;
-                panelGradientControls.Visibility = Visibility.Collapsed;
-            }
-            else if (selectedElement is Canvas arrowCanvas && arrowCanvas.Tag is Tuple<Line, Polygon, Polygon, CanvasElement>)
-            {
-                groupTextFormatting.Visibility = Visibility.Collapsed;
-                groupShapeStyling.Visibility = Visibility.Visible;
-                groupImageFilters.Visibility = Visibility.Collapsed;
-                groupArrowControls.Visibility = Visibility.Visible;
-
-                var arrowData = (Tuple<Line, Polygon, Polygon, CanvasElement>)arrowCanvas.Tag;
-                var arrowLine = arrowData.Item1;
-                var canvasElement = arrowData.Item4;
-
-                // Get arrow position from Canvas positioning
-                double canvasLeft = Canvas.GetLeft(arrowCanvas);
-                double canvasTop = Canvas.GetTop(arrowCanvas);
-                if (double.IsNaN(canvasLeft)) canvasLeft = 0;
-                if (double.IsNaN(canvasTop)) canvasTop = 0;
-
-                // Calculate X1, Y1, X2, Y2
-                double x1 = canvasLeft;
-                double y1 = canvasTop;
-                double x2 = canvasLeft + arrowLine.X2;
-                double y2 = canvasTop + arrowLine.Y2;
-
-                propertyX.Value = Math.Round(x1 * PIXELS_TO_MM, 2);
-                propertyY.Value = Math.Round(y1 * PIXELS_TO_MM, 2);
-
-                // Show X2, Y2 controls
-                labelX2.Visibility = Visibility.Visible;
-                propertyX2.Visibility = Visibility.Visible;
-                labelY2.Visibility = Visibility.Visible;
-                propertyY2.Visibility = Visibility.Visible;
-
-                propertyX2.Value = Math.Round(x2 * PIXELS_TO_MM, 2);
-                propertyY2.Value = Math.Round(y2 * PIXELS_TO_MM, 2);
-                propertyX2.IsEnabled = true;
-                propertyY2.IsEnabled = true;
-
-                // Hide Width/Height
-                propertyWidth.IsEnabled = false;
-                propertyHeight.IsEnabled = false;
-
-                // Show stroke color and thickness
-                if (arrowLine.Stroke is SolidColorBrush strokeBrush)
-                {
-                    propertyStrokeColorPreview.Fill = strokeBrush;
-                }
-                propertyStrokeThickness.Value = arrowLine.StrokeThickness;
-
-                // Enable stroke controls
-                propertyStrokeColorButton.IsEnabled = true;
-                propertyStrokeThickness.IsEnabled = true;
-
-                // Arrow-specific controls
-                propertyHasStartArrow.IsChecked = canvasElement.HasStartArrow ?? false;
-                propertyHasEndArrow.IsChecked = canvasElement.HasEndArrow ?? true;
-                propertyArrowheadSize.Value = canvasElement.ArrowheadSize ?? 10;
-                propertyArrowheadSizeValue.Text = (canvasElement.ArrowheadSize ?? 10).ToString("F0");
-
-                propertyHasStartArrow.IsEnabled = true;
-                propertyHasEndArrow.IsEnabled = true;
-                propertyArrowheadSize.IsEnabled = true;
-
-                // Hide other shape controls
-                propertyFillColorButton.IsEnabled = false;
-                propertyStrokeDashPattern.IsEnabled = false;
-                propertyUseGradientFill.IsEnabled = false;
-                labelRadiusX.Visibility = Visibility.Collapsed;
-                propertyRadiusX.Visibility = Visibility.Collapsed;
-                labelRadiusY.Visibility = Visibility.Collapsed;
-                propertyRadiusY.Visibility = Visibility.Collapsed;
-                panelGradientControls.Visibility = Visibility.Collapsed;
-            }
-            else
-            {
-                // Default case: hide optional controls
-                labelX2.Visibility = Visibility.Collapsed;
-                propertyX2.Visibility = Visibility.Collapsed;
-                labelY2.Visibility = Visibility.Collapsed;
-                propertyY2.Visibility = Visibility.Collapsed;
-                groupArrowControls.Visibility = Visibility.Collapsed;
-            }
+            // No IElementControl registered - hide all type-specific controls
+            groupTextFormatting.Visibility = Visibility.Collapsed;
+            groupShapeStyling.Visibility = Visibility.Collapsed;
+            groupImageFilters.Visibility = Visibility.Collapsed;
+            groupArrowControls.Visibility = Visibility.Collapsed;
+            labelX2.Visibility = Visibility.Collapsed;
+            propertyX2.Visibility = Visibility.Collapsed;
+            labelY2.Visibility = Visibility.Collapsed;
+            propertyY2.Visibility = Visibility.Collapsed;
         }
     }
 
@@ -639,7 +289,8 @@ public partial class MainWindow : Window
 
     private void AddText_Click(object sender, RoutedEventArgs e)
     {
-        var textBlock = CreateTextElement("Sample Text", 50, 50);
+        var textBlock = ElementFactory.CreateTextElement("Sample Text", 50, 50,
+            Element_Select, Element_MouseLeftButtonDown, Element_MouseMove, Element_MouseLeftButtonUp);
         commandManager.ExecuteCommand(new AddElementCommand(textBlock, designCanvas));
 
         // Create and register element control
@@ -653,7 +304,8 @@ public partial class MainWindow : Window
 
     private void AddRectangle_Click(object sender, RoutedEventArgs e)
     {
-        var rectangle = CreateRectangleElement(100, 100, 80, 60);
+        var rectangle = ElementFactory.CreateRectangleElement(100, 100, 80, 60,
+            Element_Select, Element_MouseLeftButtonDown, Element_MouseMove, Element_MouseLeftButtonUp);
         commandManager.ExecuteCommand(new AddElementCommand(rectangle, designCanvas));
 
         // Create and register element control
@@ -667,7 +319,8 @@ public partial class MainWindow : Window
 
     private void AddEllipse_Click(object sender, RoutedEventArgs e)
     {
-        var ellipse = CreateEllipseElement(150, 150, 80, 80);
+        var ellipse = ElementFactory.CreateEllipseElement(150, 150, 80, 80,
+            Element_Select, Element_MouseLeftButtonDown, Element_MouseMove, Element_MouseLeftButtonUp);
         commandManager.ExecuteCommand(new AddElementCommand(ellipse, designCanvas));
 
         // Create and register element control
@@ -682,7 +335,8 @@ public partial class MainWindow : Window
     private void AddLine_Click(object sender, RoutedEventArgs e)
     {
         // Create horizontal line 100 units long
-        var lineCanvas = CreateLineElement(100, 100, 200, 100);
+        var lineCanvas = ElementFactory.CreateLineElement(100, 100, 200, 100,
+            Element_Select, Element_MouseLeftButtonDown, Element_MouseMove, Element_MouseLeftButtonUp);
         commandManager.ExecuteCommand(new AddElementCommand(lineCanvas, designCanvas));
 
         // Register element control (Line already has CanvasElement in Tag)
@@ -699,7 +353,8 @@ public partial class MainWindow : Window
     private void AddArrow_Click(object sender, RoutedEventArgs e)
     {
         // Create horizontal arrow 100 units long pointing right
-        var arrowCanvas = CreateArrowElement(100, 150, 200, 150, hasStartArrow: false, hasEndArrow: true, arrowheadSize: 10);
+        var arrowCanvas = ElementFactory.CreateArrowElement(100, 150, 200, 150, false, true, 10,
+            Element_Select, Element_MouseLeftButtonDown, Element_MouseMove, Element_MouseLeftButtonUp);
         commandManager.ExecuteCommand(new AddElementCommand(arrowCanvas, designCanvas));
 
         // Register element control (Arrow already has CanvasElement in Tag)
@@ -715,8 +370,9 @@ public partial class MainWindow : Window
 
     private void AddTriangle_Click(object sender, RoutedEventArgs e)
     {
-        var points = CreateTrianglePoints(80);
-        var triangle = CreatePolygonElement(points, 100, 100);
+        var points = ElementFactory.CreateTrianglePoints(80);
+        var triangle = ElementFactory.CreatePolygonElement(points, 100, 100,
+            Element_Select, Element_MouseLeftButtonDown, Element_MouseMove, Element_MouseLeftButtonUp);
         commandManager.ExecuteCommand(new AddElementCommand(triangle, designCanvas));
 
         // Create and register element control
@@ -730,8 +386,9 @@ public partial class MainWindow : Window
 
     private void AddStar_Click(object sender, RoutedEventArgs e)
     {
-        var points = CreateStarPoints(80);
-        var star = CreatePolygonElement(points, 150, 150);
+        var points = ElementFactory.CreateStarPoints(80);
+        var star = ElementFactory.CreatePolygonElement(points, 150, 150,
+            Element_Select, Element_MouseLeftButtonDown, Element_MouseMove, Element_MouseLeftButtonUp);
         commandManager.ExecuteCommand(new AddElementCommand(star, designCanvas));
 
         // Create and register element control
@@ -755,7 +412,9 @@ public partial class MainWindow : Window
         {
             try
             {
-                var image = CreateImageElement(dialog.FileName, 200, 200);
+                var image = ElementFactory.CreateImageElement(dialog.FileName, 200, 200,
+                    designCanvas.ActualWidth, designCanvas.ActualHeight,
+                    Element_Select, Element_MouseLeftButtonDown, Element_MouseMove, Element_MouseLeftButtonUp);
                 commandManager.ExecuteCommand(new AddElementCommand(image, designCanvas));
 
                 // Register element control (Image has CanvasElement and BitmapSource in Tag)
@@ -773,484 +432,6 @@ public partial class MainWindow : Window
                 MessageBox.Show($"Failed to load image: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
-    }
-
-    private TextBlock CreateTextElement(string text, double x, double y)
-    {
-        var textBlock = new TextBlock
-        {
-            Text = text,
-            FontSize = 30,  // 8mm character height (one step smaller)
-            Foreground = Brushes.Black,
-            FontFamily = new FontFamily("Arial"),
-            TextAlignment = TextAlignment.Left,
-            FontWeight = FontWeights.Normal,
-            FontStyle = FontStyles.Normal,
-            TextWrapping = TextWrapping.Wrap, // Enable text wrapping to prevent clipping
-            Cursor = Cursors.Hand,
-            Tag = "draggable",
-            Width = 300,  // Larger default width for more text
-            Height = 80   // Larger default height to fit 8mm text comfortably
-        };
-
-        Canvas.SetLeft(textBlock, x);
-        Canvas.SetTop(textBlock, y);
-
-        textBlock.MouseLeftButtonDown += Element_Select;
-        textBlock.MouseLeftButtonDown += Element_MouseLeftButtonDown;
-        textBlock.MouseMove += Element_MouseMove;
-        textBlock.MouseLeftButtonUp += Element_MouseLeftButtonUp;
-
-        return textBlock;
-    }
-
-    private Rectangle CreateRectangleElement(double x, double y, double width, double height)
-    {
-        var rectangle = new Rectangle
-        {
-            Width = width,
-            Height = height,
-            Fill = Brushes.Transparent,
-            Stroke = Brushes.Black,
-            StrokeThickness = 2,
-            Cursor = Cursors.Hand,
-            Tag = "draggable"
-        };
-
-        Canvas.SetLeft(rectangle, x);
-        Canvas.SetTop(rectangle, y);
-
-        rectangle.MouseLeftButtonDown += Element_Select;
-        rectangle.MouseLeftButtonDown += Element_MouseLeftButtonDown;
-        rectangle.MouseMove += Element_MouseMove;
-        rectangle.MouseLeftButtonUp += Element_MouseLeftButtonUp;
-
-        return rectangle;
-    }
-
-    private Ellipse CreateEllipseElement(double x, double y, double width, double height)
-    {
-        var ellipse = new Ellipse
-        {
-            Width = width,
-            Height = height,
-            Fill = Brushes.Transparent,
-            Stroke = Brushes.Black,
-            StrokeThickness = 2,
-            Cursor = Cursors.Hand,
-            Tag = "draggable"
-        };
-
-        Canvas.SetLeft(ellipse, x);
-        Canvas.SetTop(ellipse, y);
-
-        ellipse.MouseLeftButtonDown += Element_Select;
-        ellipse.MouseLeftButtonDown += Element_MouseLeftButtonDown;
-        ellipse.MouseMove += Element_MouseMove;
-        ellipse.MouseLeftButtonUp += Element_MouseLeftButtonUp;
-
-        return ellipse;
-    }
-
-    private Image CreateImageElement(string imagePath, double x, double y)
-    {
-        var bitmap = new BitmapImage(new Uri(imagePath, UriKind.Absolute));
-
-        // Calculate size that fits in canvas while preserving aspect ratio
-        double imageWidth = bitmap.PixelWidth;
-        double imageHeight = bitmap.PixelHeight;
-        double aspectRatio = imageWidth / imageHeight;
-
-        // Maximum size: 80% of canvas dimensions to ensure it fits nicely
-        double maxWidth = designCanvas.ActualWidth * 0.8;
-        double maxHeight = designCanvas.ActualHeight * 0.8;
-
-        double finalWidth = imageWidth;
-        double finalHeight = imageHeight;
-
-        // Scale down if image is larger than max dimensions
-        if (finalWidth > maxWidth || finalHeight > maxHeight)
-        {
-            double widthScale = maxWidth / finalWidth;
-            double heightScale = maxHeight / finalHeight;
-            double scale = Math.Min(widthScale, heightScale);
-
-            finalWidth = finalWidth * scale;
-            finalHeight = finalHeight * scale;
-        }
-
-        // Create CanvasElement with filter properties initialized
-        var canvasElement = new CanvasElement
-        {
-            ElementType = "Image",
-            ImagePath = imagePath,
-            MonochromeEnabled = false,
-            Threshold = 128,
-            MonochromeAlgorithm = "Threshold",
-            InvertColors = false,
-            Brightness = 0,
-            Contrast = 0
-        };
-
-        var image = new Image
-        {
-            Stretch = Stretch.Fill,  // Fill instead of Uniform to prevent aspect ratio shifts
-            Width = finalWidth,
-            Height = finalHeight,
-            Cursor = Cursors.Hand,
-            // Store both CanvasElement and original BitmapSource in Tag
-            Tag = Tuple.Create(canvasElement, (BitmapSource)bitmap)
-        };
-
-        image.Source = bitmap;
-
-        Canvas.SetLeft(image, x);
-        Canvas.SetTop(image, y);
-
-        image.MouseLeftButtonDown += Element_Select;
-        image.MouseLeftButtonDown += Element_MouseLeftButtonDown;
-        image.MouseMove += Element_MouseMove;
-        image.MouseLeftButtonUp += Element_MouseLeftButtonUp;
-
-        return image;
-    }
-
-    private UIElement CreateLineElement(double x1, double y1, double x2, double y2)
-    {
-        // Create a Canvas to wrap the line for better hit-testing
-        var lineCanvas = new Canvas
-        {
-            Cursor = Cursors.Hand,
-            Tag = "draggable",
-            Background = Brushes.Transparent // Transparent background enables hit-testing on entire canvas
-        };
-
-        // Create the line (coordinates will be set by UpdateLineCanvas)
-        var line = new Line
-        {
-            Stroke = Brushes.Black,
-            StrokeThickness = 2
-        };
-
-        // Store line data in CanvasElement for serialization
-        var canvasElement = new CanvasElement
-        {
-            ElementType = "Line",
-            X = x1,
-            Y = y1,
-            X2 = x2,
-            Y2 = y2,
-            StrokeColor = "#FF000000",
-            StrokeThickness = 2
-        };
-
-        // Add line to canvas
-        lineCanvas.Children.Add(line);
-
-        // Store Line and CanvasElement in Tag for later access
-        lineCanvas.Tag = Tuple.Create(line, canvasElement);
-
-        // Update canvas and line positions to center the line
-        UpdateLineCanvas(lineCanvas, x1, y1, x2, y2);
-
-        // Wire up mouse handlers to the canvas (not the line)
-        lineCanvas.MouseLeftButtonDown += Element_Select;
-        lineCanvas.MouseLeftButtonDown += Element_MouseLeftButtonDown;
-        lineCanvas.MouseMove += Element_MouseMove;
-        lineCanvas.MouseLeftButtonUp += Element_MouseLeftButtonUp;
-
-        return lineCanvas;
-    }
-
-    // Helper method to update line canvas position and size to keep line centered
-    public void UpdateLineCanvas(Canvas lineCanvas, double x1, double y1, double x2, double y2)
-    {
-        if (lineCanvas.Tag is not Tuple<Line, CanvasElement> lineData)
-            return;
-
-        var line = lineData.Item1;
-        var canvasElement = lineData.Item2;
-
-        // Calculate bounding box
-        double minX = Math.Min(x1, x2);
-        double minY = Math.Min(y1, y2);
-        double maxX = Math.Max(x1, x2);
-        double maxY = Math.Max(y1, y2);
-
-        double width = maxX - minX;
-        double height = maxY - minY;
-
-        // Add padding for better hit-testing
-        const double padding = 10;
-        double canvasWidth = Math.Max(width, padding * 2);
-        double canvasHeight = Math.Max(height, padding * 2);
-
-        // Calculate centering offset
-        double offsetX = (canvasWidth - width) / 2;
-        double offsetY = (canvasHeight - height) / 2;
-
-        // Position canvas (adjusted for centering padding)
-        double canvasLeft = minX - offsetX;
-        double canvasTop = minY - offsetY;
-
-        Canvas.SetLeft(lineCanvas, canvasLeft);
-        Canvas.SetTop(lineCanvas, canvasTop);
-
-        // Set canvas size
-        lineCanvas.Width = canvasWidth;
-        lineCanvas.Height = canvasHeight;
-
-        // Set line coordinates relative to canvas (centered with padding)
-        line.X1 = (x1 - minX) + offsetX;
-        line.Y1 = (y1 - minY) + offsetY;
-        line.X2 = (x2 - minX) + offsetX;
-        line.Y2 = (y2 - minY) + offsetY;
-
-        // Update CanvasElement with absolute coordinates
-        canvasElement.X = x1;
-        canvasElement.Y = y1;
-        canvasElement.X2 = x2;
-        canvasElement.Y2 = y2;
-    }
-
-    private UIElement CreateArrowElement(double x1, double y1, double x2, double y2, bool hasStartArrow = false, bool hasEndArrow = true, double arrowheadSize = 10)
-    {
-        // Create a Canvas to group the line and arrowheads together
-        var arrowCanvas = new Canvas
-        {
-            Cursor = Cursors.Hand,
-            Tag = "draggable"
-        };
-
-        // Create the main line
-        var line = new Line
-        {
-            X1 = 0,
-            Y1 = 0,
-            X2 = x2 - x1,
-            Y2 = y2 - y1,
-            Stroke = Brushes.Black,
-            StrokeThickness = 2
-        };
-
-        // Calculate arrow angle
-        double dx = x2 - x1;
-        double dy = y2 - y1;
-        double angle = Math.Atan2(dy, dx);
-
-        // Store arrow data in Tag as Tuple<Line, Polygon?, Polygon?, CanvasElement>
-        var canvasElement = new CanvasElement
-        {
-            ElementType = "Arrow",
-            X = x1,
-            Y = y1,
-            X2 = x2,
-            Y2 = y2,
-            StrokeColor = "#FF000000",
-            StrokeThickness = 2,
-            HasStartArrow = hasStartArrow,
-            HasEndArrow = hasEndArrow,
-            ArrowheadSize = arrowheadSize
-        };
-
-        Polygon? startArrowhead = null;
-        Polygon? endArrowhead = null;
-
-        // Create start arrowhead if needed
-        if (hasStartArrow)
-        {
-            startArrowhead = CreateArrowhead(0, 0, angle + Math.PI, arrowheadSize);
-            arrowCanvas.Children.Add(startArrowhead);
-        }
-
-        // Create end arrowhead if needed
-        if (hasEndArrow)
-        {
-            endArrowhead = CreateArrowhead(x2 - x1, y2 - y1, angle, arrowheadSize);
-            arrowCanvas.Children.Add(endArrowhead);
-        }
-
-        arrowCanvas.Children.Add(line);
-
-        // Position the canvas
-        Canvas.SetLeft(arrowCanvas, x1);
-        Canvas.SetTop(arrowCanvas, y1);
-
-        // Calculate bounds for the arrow (needed for resizing)
-        double minX = Math.Min(0, x2 - x1);
-        double minY = Math.Min(0, y2 - y1);
-        double maxX = Math.Max(0, x2 - x1);
-        double maxY = Math.Max(0, y2 - y1);
-
-        arrowCanvas.Width = maxX - minX + arrowheadSize * 2;
-        arrowCanvas.Height = maxY - minY + arrowheadSize * 2;
-
-        // Store references in Tag
-        arrowCanvas.Tag = Tuple.Create(line, startArrowhead, endArrowhead, canvasElement);
-
-        arrowCanvas.MouseLeftButtonDown += Element_Select;
-        arrowCanvas.MouseLeftButtonDown += Element_MouseLeftButtonDown;
-        arrowCanvas.MouseMove += Element_MouseMove;
-        arrowCanvas.MouseLeftButtonUp += Element_MouseLeftButtonUp;
-
-        return arrowCanvas;
-    }
-
-    private Polygon CreateArrowhead(double x, double y, double angle, double size)
-    {
-        // Create triangular arrowhead
-        var arrowhead = new Polygon
-        {
-            Fill = Brushes.Black,
-            Stroke = Brushes.Black,
-            StrokeThickness = 1
-        };
-
-        // Arrow points (triangle pointing right, then rotated)
-        double halfSize = size / 2;
-        Point tip = new Point(x, y);
-        Point left = new Point(x - size, y - halfSize);
-        Point right = new Point(x - size, y + halfSize);
-
-        // Rotate points around tip
-        Point leftRotated = RotatePoint(left, tip, angle);
-        Point rightRotated = RotatePoint(right, tip, angle);
-
-        arrowhead.Points.Add(tip);
-        arrowhead.Points.Add(leftRotated);
-        arrowhead.Points.Add(rightRotated);
-
-        return arrowhead;
-    }
-
-    private Point RotatePoint(Point point, Point center, double angle)
-    {
-        double cos = Math.Cos(angle);
-        double sin = Math.Sin(angle);
-        double dx = point.X - center.X;
-        double dy = point.Y - center.Y;
-
-        return new Point(
-            center.X + dx * cos - dy * sin,
-            center.Y + dx * sin + dy * cos
-        );
-    }
-
-    private Polygon CreatePolygonElement(PointCollection points, double x, double y)
-    {
-        var polygon = new Polygon
-        {
-            Points = points,
-            Fill = Brushes.Transparent,
-            Stroke = Brushes.Black,
-            StrokeThickness = 2,
-            Cursor = Cursors.Hand,
-            Tag = "draggable"
-        };
-
-        // Position using Canvas.SetLeft/Top
-        Canvas.SetLeft(polygon, x);
-        Canvas.SetTop(polygon, y);
-
-        polygon.MouseLeftButtonDown += Element_Select;
-        polygon.MouseLeftButtonDown += Element_MouseLeftButtonDown;
-        polygon.MouseMove += Element_MouseMove;
-        polygon.MouseLeftButtonUp += Element_MouseLeftButtonUp;
-
-        return polygon;
-    }
-
-    private PointCollection CreateTrianglePoints(double size)
-    {
-        // Equilateral triangle centered in a square of given size
-        // Top point, bottom-left, bottom-right
-        var points = new PointCollection
-        {
-            new Point(size / 2, size * 0.125),      // Top center (raised slightly)
-            new Point(size * 0.125, size * 0.875),  // Bottom left
-            new Point(size * 0.875, size * 0.875)   // Bottom right
-        };
-        return points;
-    }
-
-    private PointCollection CreateStarPoints(double size, int pointCount = 5)
-    {
-        var points = new PointCollection();
-        double centerX = size / 2;
-        double centerY = size / 2;
-        double outerRadius = size / 2;
-        double innerRadius = size / 4;
-
-        // Generate alternating outer and inner points
-        for (int i = 0; i < pointCount * 2; i++)
-        {
-            double angle = Math.PI / 2 + (i * Math.PI / pointCount);  // Start from top, rotate clockwise
-            double radius = (i % 2 == 0) ? outerRadius : innerRadius;
-
-            double x = centerX + radius * Math.Cos(angle);
-            double y = centerY - radius * Math.Sin(angle);  // Negative because Y increases downward
-
-            points.Add(new Point(x, y));
-        }
-
-        return points;
-    }
-
-    private void UpdateArrowEndpoint(Canvas arrowCanvas, double newX2, double newY2, bool isX2)
-    {
-        if (arrowCanvas.Tag is not Tuple<Line, Polygon, Polygon, CanvasElement> arrowData)
-            return;
-
-        var line = arrowData.Item1;
-        var startArrowhead = arrowData.Item2;
-        var endArrowhead = arrowData.Item3;
-        var canvasElement = arrowData.Item4;
-
-        double canvasLeft = Canvas.GetLeft(arrowCanvas);
-        double canvasTop = Canvas.GetTop(arrowCanvas);
-        if (double.IsNaN(canvasLeft)) canvasLeft = 0;
-        if (double.IsNaN(canvasTop)) canvasTop = 0;
-
-        // Calculate new relative coordinates
-        double newRelX2 = newX2 - canvasLeft;
-        double newRelY2 = newY2 - canvasTop;
-
-        // Update line endpoints
-        line.X2 = newRelX2;
-        line.Y2 = newRelY2;
-
-        // Update CanvasElement
-        canvasElement.X2 = newX2;
-        canvasElement.Y2 = newY2;
-
-        // Recalculate arrowheads
-        double angle = Math.Atan2(newRelY2, newRelX2);
-        double arrowheadSize = canvasElement.ArrowheadSize ?? 10;
-
-        // Remove old arrowheads
-        if (startArrowhead != null)
-            arrowCanvas.Children.Remove(startArrowhead);
-        if (endArrowhead != null)
-            arrowCanvas.Children.Remove(endArrowhead);
-
-        // Create new arrowheads
-        Polygon? newStartArrowhead = null;
-        Polygon? newEndArrowhead = null;
-
-        if (canvasElement.HasStartArrow ?? false)
-        {
-            newStartArrowhead = CreateArrowhead(0, 0, angle + Math.PI, arrowheadSize);
-            arrowCanvas.Children.Insert(0, newStartArrowhead);
-        }
-
-        if (canvasElement.HasEndArrow ?? true)
-        {
-            newEndArrowhead = CreateArrowhead(newRelX2, newRelY2, angle, arrowheadSize);
-            arrowCanvas.Children.Insert(0, newEndArrowhead);
-        }
-
-        // Update Tag with new arrowheads
-        arrowCanvas.Tag = Tuple.Create(line, newStartArrowhead, newEndArrowhead, canvasElement);
     }
 
     private void Element_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -1436,6 +617,10 @@ public partial class MainWindow : Window
                 UpdateUndoRedoButtons();
                 UpdatePropertiesPanel(); // Update properties panel after drag
                 isDirty = true;
+
+                // Update CanvasElement coordinates for Line/Arrow after move
+                // The CanvasElement stores absolute coordinates used for serialization
+                UpdateLineArrowCanvasElement(draggedElement);
             }
         }
 
@@ -1443,6 +628,44 @@ public partial class MainWindow : Window
         isDragging = false;
         draggedElement = null;
         e.Handled = true;
+    }
+
+    /// <summary>
+    /// Updates the CanvasElement coordinates for Line/Arrow elements after a move operation.
+    /// The CanvasElement stores absolute coordinates used for serialization.
+    /// </summary>
+    private void UpdateLineArrowCanvasElement(UIElement element)
+    {
+        if (element is Canvas lineCanvas && lineCanvas.Tag is Tuple<Line, CanvasElement> lineData)
+        {
+            var line = lineData.Item1;
+            var canvasElement = lineData.Item2;
+            double canvasLeft = Canvas.GetLeft(lineCanvas);
+            double canvasTop = Canvas.GetTop(lineCanvas);
+            if (double.IsNaN(canvasLeft)) canvasLeft = 0;
+            if (double.IsNaN(canvasTop)) canvasTop = 0;
+
+            // Calculate absolute coordinates from canvas position + internal line coordinates
+            canvasElement.X = canvasLeft + line.X1;
+            canvasElement.Y = canvasTop + line.Y1;
+            canvasElement.X2 = canvasLeft + line.X2;
+            canvasElement.Y2 = canvasTop + line.Y2;
+        }
+        else if (element is Canvas arrowCanvas && arrowCanvas.Tag is Tuple<Line, Polygon?, Polygon?, CanvasElement> arrowData)
+        {
+            var line = arrowData.Item1;
+            var canvasElement = arrowData.Item4;
+            double canvasLeft = Canvas.GetLeft(arrowCanvas);
+            double canvasTop = Canvas.GetTop(arrowCanvas);
+            if (double.IsNaN(canvasLeft)) canvasLeft = 0;
+            if (double.IsNaN(canvasTop)) canvasTop = 0;
+
+            // Calculate absolute coordinates from canvas position + internal line coordinates
+            canvasElement.X = canvasLeft + line.X1;
+            canvasElement.Y = canvasTop + line.Y1;
+            canvasElement.X2 = canvasLeft + line.X2;
+            canvasElement.Y2 = canvasTop + line.Y2;
+        }
     }
 
     private void Window_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
@@ -1771,169 +994,7 @@ public partial class MainWindow : Window
 
     private LabelDocument SerializeCanvas()
     {
-        var doc = new LabelDocument
-        {
-            CanvasWidth = designCanvas.ActualWidth,
-            CanvasHeight = designCanvas.ActualHeight,
-            Elements = new List<CanvasElement>()
-        };
-
-        foreach (UIElement child in designCanvas.Children)
-        {
-            var element = new CanvasElement();
-
-            // Get position (handle NaN)
-            double left = Canvas.GetLeft(child);
-            double top = Canvas.GetTop(child);
-            element.X = double.IsNaN(left) ? 0.0 : left;
-            element.Y = double.IsNaN(top) ? 0.0 : top;
-
-            // Type-specific extraction
-            if (child is TextBlock textBlock)
-            {
-                element.ElementType = "Text";
-                element.Width = textBlock.Width;
-                element.Height = textBlock.Height;
-                element.Text = textBlock.Text;
-                element.FontSize = textBlock.FontSize;
-                if (textBlock.Foreground is SolidColorBrush brush)
-                    element.ForegroundColor = brush.Color.ToString();
-
-                // Text formatting properties
-                element.FontFamily = textBlock.FontFamily.Source;
-                element.TextAlignment = textBlock.TextAlignment.ToString();
-                element.FontWeight = textBlock.FontWeight == FontWeights.Bold ? "Bold" : "Normal";
-                element.FontStyle = textBlock.FontStyle == FontStyles.Italic ? "Italic" : "Normal";
-            }
-            else if (child is Rectangle rectangle)
-            {
-                element.ElementType = "Rectangle";
-                element.Width = rectangle.Width;
-                element.Height = rectangle.Height;
-                if (rectangle.Fill is SolidColorBrush fillBrush)
-                    element.FillColor = fillBrush.Color.ToString();
-                if (rectangle.Stroke is SolidColorBrush strokeBrush)
-                    element.StrokeColor = strokeBrush.Color.ToString();
-                element.StrokeThickness = rectangle.StrokeThickness;
-
-                // Extended shape properties
-                element.RadiusX = rectangle.RadiusX;
-                element.RadiusY = rectangle.RadiusY;
-                element.StrokeDashPattern = DetectDashPattern(rectangle.StrokeDashArray);
-
-                if (rectangle.Fill is LinearGradientBrush gradientBrush)
-                {
-                    element.UseGradientFill = true;
-                    if (gradientBrush.GradientStops.Count >= 2)
-                    {
-                        element.GradientStartColor = gradientBrush.GradientStops[0].Color.ToString();
-                        element.GradientEndColor = gradientBrush.GradientStops[^1].Color.ToString();
-                        element.GradientAngle = CalculateGradientAngle(gradientBrush);
-                    }
-                }
-            }
-            else if (child is Ellipse ellipse)
-            {
-                element.ElementType = "Ellipse";
-                element.Width = ellipse.Width;
-                element.Height = ellipse.Height;
-                if (ellipse.Fill is SolidColorBrush fillBrush)
-                    element.FillColor = fillBrush.Color.ToString();
-                if (ellipse.Stroke is SolidColorBrush strokeBrush)
-                    element.StrokeColor = strokeBrush.Color.ToString();
-                element.StrokeThickness = ellipse.StrokeThickness;
-
-                // Extended shape properties
-                element.StrokeDashPattern = DetectDashPattern(ellipse.StrokeDashArray);
-
-                if (ellipse.Fill is LinearGradientBrush gradientBrush)
-                {
-                    element.UseGradientFill = true;
-                    if (gradientBrush.GradientStops.Count >= 2)
-                    {
-                        element.GradientStartColor = gradientBrush.GradientStops[0].Color.ToString();
-                        element.GradientEndColor = gradientBrush.GradientStops[^1].Color.ToString();
-                        element.GradientAngle = CalculateGradientAngle(gradientBrush);
-                    }
-                }
-            }
-            else if (child is Polygon polygon)
-            {
-                element.ElementType = "Polygon";
-                // Serialize points as space-separated string "x1,y1 x2,y2 x3,y3..."
-                element.PolygonPoints = string.Join(" ", polygon.Points.Select(p => $"{p.X},{p.Y}"));
-                if (polygon.Fill is SolidColorBrush fillBrush)
-                    element.FillColor = fillBrush.Color.ToString();
-                if (polygon.Stroke is SolidColorBrush strokeBrush)
-                    element.StrokeColor = strokeBrush.Color.ToString();
-                element.StrokeThickness = polygon.StrokeThickness;
-            }
-            else if (child is Line line)
-            {
-                element.ElementType = "Line";
-                element.X = line.X1;
-                element.Y = line.Y1;
-                element.X2 = line.X2;
-                element.Y2 = line.Y2;
-                if (line.Stroke is SolidColorBrush strokeBrush)
-                    element.StrokeColor = strokeBrush.Color.ToString();
-                element.StrokeThickness = line.StrokeThickness;
-            }
-            else if (child is Canvas lineCanvasWrapper && lineCanvasWrapper.Tag is Tuple<Line, CanvasElement>)
-            {
-                // Line element (stored as Canvas wrapper with Line)
-                var lineData = (Tuple<Line, CanvasElement>)lineCanvasWrapper.Tag;
-                element = lineData.Item2; // Get the stored CanvasElement
-                // Update position from Canvas
-                element.X = double.IsNaN(left) ? 0.0 : left;
-                element.Y = double.IsNaN(top) ? 0.0 : top;
-                // Update X2/Y2 from internal line coordinates
-                var internalLine = lineData.Item1;
-                element.X2 = element.X + internalLine.X2;
-                element.Y2 = element.Y + internalLine.Y2;
-                // Update stroke properties from internal line
-                if (internalLine.Stroke is SolidColorBrush strokeBrush)
-                    element.StrokeColor = strokeBrush.Color.ToString();
-                element.StrokeThickness = internalLine.StrokeThickness;
-            }
-            else if (child is Canvas arrowCanvasWrapper && arrowCanvasWrapper.Tag is Tuple<Line, Polygon, Polygon, CanvasElement>)
-            {
-                // Arrow element (stored as Canvas with Line + Polygons)
-                var arrowData = (Tuple<Line, Polygon, Polygon, CanvasElement>)arrowCanvasWrapper.Tag;
-                element = arrowData.Item4; // Get the stored CanvasElement
-                // Update position from Canvas
-                element.X = double.IsNaN(left) ? 0.0 : left;
-                element.Y = double.IsNaN(top) ? 0.0 : top;
-            }
-            else if (child is Image image)
-            {
-                // Get CanvasElement from Tag if it exists (Phase 9+)
-                if (image.Tag is Tuple<CanvasElement, BitmapSource> tuple)
-                {
-                    // Use the CanvasElement from Tag which has all properties including filter settings
-                    element = tuple.Item1;
-                    // Update position and size from actual element
-                    element.X = double.IsNaN(left) ? 0.0 : left;
-                    element.Y = double.IsNaN(top) ? 0.0 : top;
-                    element.Width = image.Width;
-                    element.Height = image.Height;
-                }
-                else
-                {
-                    // Legacy support for images without Tag (pre-Phase 9)
-                    element.ElementType = "Image";
-                    element.Width = image.Width;
-                    element.Height = image.Height;
-                    if (image.Source is BitmapImage bitmapImage)
-                        element.ImagePath = bitmapImage.UriSource?.AbsolutePath;
-                }
-            }
-
-            if (!string.IsNullOrEmpty(element.ElementType))
-                doc.Elements.Add(element);
-        }
-
-        return doc;
+        return LabelSerializer.SerializeCanvas(designCanvas);
     }
 
     private void DeserializeCanvas(LabelDocument doc)
@@ -1943,261 +1004,147 @@ public partial class MainWindow : Window
         designCanvas.Children.Clear();
         SelectElement(null);
 
-        designCanvas.Width = doc.CanvasWidth;
-        designCanvas.Height = doc.CanvasHeight;
         UpdateStatusBar();
         UpdateGridBackground();
 
-        foreach (var element in doc.Elements)
-        {
-            UIElement? uiElement = null;
-
-            switch (element.ElementType)
+        // Use LabelSerializer with callbacks for element creation and post-processing
+        LabelSerializer.DeserializeToCanvas(
+            doc,
+            designCanvas,
+            CreateElementFromCanvasElement,
+            (uiElement, element) =>
             {
-                case "Text":
-                    uiElement = CreateTextElement(
-                        element.Text ?? "Text",
-                        element.X,
-                        element.Y
-                    );
-                    if (uiElement is TextBlock tb)
-                    {
-                        tb.Width = element.Width;
-                        tb.Height = element.Height;
-                        if (element.FontSize.HasValue)
-                            tb.FontSize = element.FontSize.Value;
-                        if (!string.IsNullOrEmpty(element.ForegroundColor))
-                        {
-                            var color = (Color)ColorConverter.ConvertFromString(element.ForegroundColor);
-                            tb.Foreground = new SolidColorBrush(color);
-                        }
-
-                        // Text formatting properties
-                        if (!string.IsNullOrEmpty(element.FontFamily))
-                            tb.FontFamily = new FontFamily(element.FontFamily);
-                        if (!string.IsNullOrEmpty(element.TextAlignment))
-                            tb.TextAlignment = Enum.Parse<TextAlignment>(element.TextAlignment);
-                        if (!string.IsNullOrEmpty(element.FontWeight))
-                            tb.FontWeight = element.FontWeight == "Bold" ? FontWeights.Bold : FontWeights.Normal;
-                        if (!string.IsNullOrEmpty(element.FontStyle))
-                            tb.FontStyle = element.FontStyle == "Italic" ? FontStyles.Italic : FontStyles.Normal;
-                    }
-                    break;
-
-                case "Rectangle":
-                    uiElement = CreateRectangleElement(
-                        element.X,
-                        element.Y,
-                        element.Width,
-                        element.Height
-                    );
-                    if (uiElement is Rectangle rect)
-                    {
-                        if (!string.IsNullOrEmpty(element.FillColor))
-                        {
-                            var color = (Color)ColorConverter.ConvertFromString(element.FillColor);
-                            rect.Fill = new SolidColorBrush(color);
-                        }
-                        if (!string.IsNullOrEmpty(element.StrokeColor))
-                        {
-                            var color = (Color)ColorConverter.ConvertFromString(element.StrokeColor);
-                            rect.Stroke = new SolidColorBrush(color);
-                        }
-                        if (element.StrokeThickness.HasValue)
-                            rect.StrokeThickness = element.StrokeThickness.Value;
-
-                        // Extended shape properties
-                        if (element.RadiusX.HasValue)
-                            rect.RadiusX = element.RadiusX.Value;
-                        if (element.RadiusY.HasValue)
-                            rect.RadiusY = element.RadiusY.Value;
-
-                        if (!string.IsNullOrEmpty(element.StrokeDashPattern))
-                            ApplyDashPattern(rect, element.StrokeDashPattern);
-
-                        if (element.UseGradientFill == true)
-                        {
-                            var startColor = (Color)ColorConverter.ConvertFromString(element.GradientStartColor ?? "#FFFFFF");
-                            var endColor = (Color)ColorConverter.ConvertFromString(element.GradientEndColor ?? "#000000");
-                            rect.Fill = CreateGradientBrush(startColor, endColor, element.GradientAngle ?? 0);
-                        }
-                    }
-                    break;
-
-                case "Ellipse":
-                    uiElement = CreateEllipseElement(
-                        element.X,
-                        element.Y,
-                        element.Width,
-                        element.Height
-                    );
-                    if (uiElement is Ellipse ellipse)
-                    {
-                        if (!string.IsNullOrEmpty(element.FillColor))
-                        {
-                            var color = (Color)ColorConverter.ConvertFromString(element.FillColor);
-                            ellipse.Fill = new SolidColorBrush(color);
-                        }
-                        if (!string.IsNullOrEmpty(element.StrokeColor))
-                        {
-                            var color = (Color)ColorConverter.ConvertFromString(element.StrokeColor);
-                            ellipse.Stroke = new SolidColorBrush(color);
-                        }
-                        if (element.StrokeThickness.HasValue)
-                            ellipse.StrokeThickness = element.StrokeThickness.Value;
-
-                        // Extended shape properties
-                        if (!string.IsNullOrEmpty(element.StrokeDashPattern))
-                            ApplyDashPattern(ellipse, element.StrokeDashPattern);
-
-                        if (element.UseGradientFill == true)
-                        {
-                            var startColor = (Color)ColorConverter.ConvertFromString(element.GradientStartColor ?? "#FFFFFF");
-                            var endColor = (Color)ColorConverter.ConvertFromString(element.GradientEndColor ?? "#000000");
-                            ellipse.Fill = CreateGradientBrush(startColor, endColor, element.GradientAngle ?? 0);
-                        }
-                    }
-                    break;
-
-                case "Polygon":
-                    if (!string.IsNullOrEmpty(element.PolygonPoints))
-                    {
-                        // Parse points from "x1,y1 x2,y2 x3,y3..." format
-                        var points = new PointCollection();
-                        var pointPairs = element.PolygonPoints.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                        foreach (var pair in pointPairs)
-                        {
-                            var coords = pair.Split(',');
-                            if (coords.Length == 2 &&
-                                double.TryParse(coords[0], out double x) &&
-                                double.TryParse(coords[1], out double y))
-                            {
-                                points.Add(new Point(x, y));
-                            }
-                        }
-
-                        uiElement = CreatePolygonElement(points, element.X, element.Y);
-                        if (uiElement is Polygon poly)
-                        {
-                            if (!string.IsNullOrEmpty(element.FillColor))
-                            {
-                                var color = (Color)ColorConverter.ConvertFromString(element.FillColor);
-                                poly.Fill = new SolidColorBrush(color);
-                            }
-                            if (!string.IsNullOrEmpty(element.StrokeColor))
-                            {
-                                var color = (Color)ColorConverter.ConvertFromString(element.StrokeColor);
-                                poly.Stroke = new SolidColorBrush(color);
-                            }
-                            if (element.StrokeThickness.HasValue)
-                                poly.StrokeThickness = element.StrokeThickness.Value;
-                        }
-                    }
-                    break;
-
-                case "Image":
-                    if (!string.IsNullOrEmpty(element.ImagePath))
-                    {
-                        uiElement = CreateImageElement(
-                            element.ImagePath,
-                            element.X,
-                            element.Y
-                        );
-                        if (uiElement is Image img)
-                        {
-                            img.Width = element.Width;
-                            img.Height = element.Height;
-
-                            // Restore filter settings if present
-                            if (img.Tag is Tuple<CanvasElement, BitmapSource> tuple)
-                            {
-                                var canvasElement = tuple.Item1;
-                                // Copy filter properties from deserialized element
-                                canvasElement.MonochromeEnabled = element.MonochromeEnabled;
-                                canvasElement.Threshold = element.Threshold;
-                                canvasElement.MonochromeAlgorithm = element.MonochromeAlgorithm;
-                                canvasElement.InvertColors = element.InvertColors;
-                                canvasElement.Brightness = element.Brightness;
-                                canvasElement.Contrast = element.Contrast;
-
-                                // Apply filter if enabled
-                                if (canvasElement.MonochromeEnabled == true)
-                                {
-                                    ApplyImageFilter(img);
-                                }
-                            }
-                        }
-                    }
-                    break;
-
-                case "Line":
-                    uiElement = CreateLineElement(
-                        element.X,
-                        element.Y,
-                        element.X2 ?? element.X + 100,
-                        element.Y2 ?? element.Y
-                    );
-                    // Line is now wrapped in Canvas - extract internal line to apply properties
-                    if (uiElement is Canvas lineCanvas && lineCanvas.Tag is Tuple<Line, CanvasElement>)
-                    {
-                        var lineData = (Tuple<Line, CanvasElement>)lineCanvas.Tag;
-                        var ln = lineData.Item1;
-
-                        if (!string.IsNullOrEmpty(element.StrokeColor))
-                        {
-                            var color = (Color)ColorConverter.ConvertFromString(element.StrokeColor);
-                            ln.Stroke = new SolidColorBrush(color);
-                        }
-                        if (element.StrokeThickness.HasValue)
-                            ln.StrokeThickness = element.StrokeThickness.Value;
-                    }
-                    break;
-
-                case "Arrow":
-                    uiElement = CreateArrowElement(
-                        element.X,
-                        element.Y,
-                        element.X2 ?? element.X + 100,
-                        element.Y2 ?? element.Y,
-                        element.HasStartArrow ?? false,
-                        element.HasEndArrow ?? true,
-                        element.ArrowheadSize ?? 10
-                    );
-                    if (uiElement is Canvas arrowCanvas && arrowCanvas.Tag is Tuple<Line, Polygon, Polygon, CanvasElement> arrowData)
-                    {
-                        var line = arrowData.Item1;
-                        if (!string.IsNullOrEmpty(element.StrokeColor))
-                        {
-                            var color = (Color)ColorConverter.ConvertFromString(element.StrokeColor);
-                            line.Stroke = new SolidColorBrush(color);
-                            // Update arrowheads color too
-                            if (arrowData.Item2 != null)
-                            {
-                                arrowData.Item2.Fill = new SolidColorBrush(color);
-                                arrowData.Item2.Stroke = new SolidColorBrush(color);
-                            }
-                            if (arrowData.Item3 != null)
-                            {
-                                arrowData.Item3.Fill = new SolidColorBrush(color);
-                                arrowData.Item3.Stroke = new SolidColorBrush(color);
-                            }
-                        }
-                        if (element.StrokeThickness.HasValue)
-                            line.StrokeThickness = element.StrokeThickness.Value;
-                    }
-                    break;
-            }
-
-            if (uiElement != null)
-            {
-                designCanvas.Children.Add(uiElement);
-
-                // Register element control for loaded elements
+                // Apply element-specific properties and register control
+                ApplyDeserializedProperties(uiElement, element);
                 RegisterElementControlForLoadedElement(uiElement, element);
             }
-        }
+        );
 
         isDirty = false;
+    }
+
+    /// <summary>
+    /// Creates a UIElement from a CanvasElement with proper event handler wiring.
+    /// </summary>
+    private UIElement? CreateElementFromCanvasElement(CanvasElement element)
+    {
+        // Validate dimensions - use defaults for invalid values
+        double width = LabelSerializer.ValidateSize(element.Width, 80);
+        double height = LabelSerializer.ValidateSize(element.Height, 60);
+
+        return element.ElementType switch
+        {
+            "Text" => ElementFactory.CreateTextElement(
+                element.Text ?? "Text",
+                element.X,
+                element.Y,
+                Element_Select, Element_MouseLeftButtonDown, Element_MouseMove, Element_MouseLeftButtonUp),
+
+            "Rectangle" => ElementFactory.CreateRectangleElement(
+                element.X,
+                element.Y,
+                width > 0 ? width : 80,
+                height > 0 ? height : 60,
+                Element_Select, Element_MouseLeftButtonDown, Element_MouseMove, Element_MouseLeftButtonUp),
+
+            "Ellipse" => ElementFactory.CreateEllipseElement(
+                element.X,
+                element.Y,
+                width > 0 ? width : 80,
+                height > 0 ? height : 80,
+                Element_Select, Element_MouseLeftButtonDown, Element_MouseMove, Element_MouseLeftButtonUp),
+
+            "Polygon" when !string.IsNullOrEmpty(element.PolygonPoints) =>
+                ElementFactory.CreatePolygonElement(
+                    LabelSerializer.ParsePolygonPoints(element.PolygonPoints),
+                    element.X,
+                    element.Y,
+                    Element_Select, Element_MouseLeftButtonDown, Element_MouseMove, Element_MouseLeftButtonUp),
+
+            "Image" when !string.IsNullOrEmpty(element.ImagePath) =>
+                ElementFactory.CreateImageElement(
+                    element.ImagePath,
+                    element.X,
+                    element.Y,
+                    designCanvas.ActualWidth,
+                    designCanvas.ActualHeight,
+                    Element_Select, Element_MouseLeftButtonDown, Element_MouseMove, Element_MouseLeftButtonUp),
+
+            "Line" => ElementFactory.CreateLineElement(
+                element.X,
+                element.Y,
+                element.X2 ?? element.X + 100,
+                element.Y2 ?? element.Y,
+                Element_Select, Element_MouseLeftButtonDown, Element_MouseMove, Element_MouseLeftButtonUp),
+
+            "Arrow" => ElementFactory.CreateArrowElement(
+                element.X,
+                element.Y,
+                element.X2 ?? element.X + 100,
+                element.Y2 ?? element.Y,
+                element.HasStartArrow ?? false,
+                element.HasEndArrow ?? true,
+                element.ArrowheadSize ?? 10,
+                Element_Select, Element_MouseLeftButtonDown, Element_MouseMove, Element_MouseLeftButtonUp),
+
+            _ => null
+        };
+    }
+
+    /// <summary>
+    /// Applies deserialized properties to a created UIElement.
+    /// </summary>
+    private void ApplyDeserializedProperties(UIElement uiElement, CanvasElement element)
+    {
+        switch (element.ElementType)
+        {
+            case "Text" when uiElement is TextBlock tb:
+                LabelSerializer.ApplyTextProperties(tb, element);
+                break;
+
+            case "Rectangle" when uiElement is Rectangle rect:
+                LabelSerializer.ApplyRectangleProperties(rect, element);
+                break;
+
+            case "Ellipse" when uiElement is Ellipse ellipse:
+                LabelSerializer.ApplyEllipseProperties(ellipse, element);
+                break;
+
+            case "Polygon" when uiElement is Polygon poly:
+                LabelSerializer.ApplyPolygonProperties(poly, element);
+                break;
+
+            case "Image" when uiElement is Image img:
+                double imgWidth = LabelSerializer.ValidateSize(element.Width);
+                double imgHeight = LabelSerializer.ValidateSize(element.Height);
+                if (imgWidth > 0) img.Width = imgWidth;
+                if (imgHeight > 0) img.Height = imgHeight;
+                // Restore filter settings if present
+                if (img.Tag is Tuple<CanvasElement, BitmapSource> tuple)
+                {
+                    var canvasElement = tuple.Item1;
+                    canvasElement.MonochromeEnabled = element.MonochromeEnabled;
+                    canvasElement.Threshold = element.Threshold;
+                    canvasElement.MonochromeAlgorithm = element.MonochromeAlgorithm;
+                    canvasElement.InvertColors = element.InvertColors;
+                    canvasElement.Brightness = element.Brightness;
+                    canvasElement.Contrast = element.Contrast;
+
+                    if (canvasElement.MonochromeEnabled == true)
+                    {
+                        ApplyImageFilter(img);
+                    }
+                }
+                break;
+
+            case "Line" when uiElement is Canvas lineCanvas:
+                LabelSerializer.ApplyLineProperties(lineCanvas, element);
+                break;
+
+            case "Arrow" when uiElement is Canvas arrowCanvas:
+                LabelSerializer.ApplyArrowProperties(arrowCanvas, element);
+                break;
+        }
     }
 
     /// <summary>
@@ -2508,1088 +1455,180 @@ public partial class MainWindow : Window
         isDirty = true;
     }
 
-    // Properties panel event handlers
+    #region Properties Panel Event Handlers - Delegated to PropertyPanelController
+
+    // GotFocus handler - captures initial values for undo/redo
     private void Property_GotFocus(object sender, RoutedEventArgs e)
-    {
-        if (sender is TextBox textBox)
-        {
-            // Store initial value for numeric properties
-            if (double.TryParse(textBox.Text, out double value))
-            {
-                initialPropertyValue = value;
-            }
-            // Store initial string value for text properties
-            initialStringValue = textBox.Text;
-        }
-        else if (sender is ComboBox comboBox)
-        {
-            // Store initial string value for combo boxes
-            if (comboBox.SelectedItem != null)
-            {
-                if (comboBox.SelectedItem is ComboBoxItem item)
-                {
-                    string displayText = item.Content.ToString()!;
-                    // For alignment combo box, store the enum value, not the display text
-                    if (comboBox.Name == "propertyAlignment")
-                    {
-                        initialStringValue = displayText switch
-                        {
-                            "Links" => "Left",
-                            "Mitte" => "Center",
-                            "Rechts" => "Right",
-                            _ => displayText
-                        };
-                    }
-                    // For font size combo box, store as numeric value
-                    else if (comboBox.Name == "propertyFontSize")
-                    {
-                        initialStringValue = displayText;
-                        if (double.TryParse(displayText, out double fontSize))
-                        {
-                            initialPropertyValue = fontSize;
-                        }
-                    }
-                    else
-                    {
-                        initialStringValue = displayText;
-                    }
-                }
-                else
-                {
-                    initialStringValue = comboBox.SelectedItem.ToString();
-                    // For editable combo boxes, also try to parse numeric value
-                    if (comboBox.Name == "propertyFontSize" && double.TryParse(comboBox.Text, out double fontSize))
-                    {
-                        initialPropertyValue = fontSize;
-                    }
-                }
-            }
-            else
-            {
-                // SelectedItem is null, use the current Text value
-                initialStringValue = comboBox.Text;
-                // For font size combo box, also store as numeric value
-                if (comboBox.Name == "propertyFontSize" && double.TryParse(comboBox.Text, out double fontSize))
-                {
-                    initialPropertyValue = fontSize;
-                }
-            }
-        }
-        else if (sender is Slider slider)
-        {
-            // Store initial value for slider
-            initialPropertyValue = slider.Value;
-        }
-    }
+        => _propertyPanelController?.HandleGotFocus(sender, e);
 
+    // ValueChanged handler for NumericUpDown controls
     private void Property_ValueChanged(object sender, double newValue)
-    {
-        if (selectedElement == null) return;
+        => _propertyPanelController?.HandleValueChanged(sender, newValue,
+            propertyX, propertyY, propertyWidth, propertyHeight,
+            propertyStrokeThickness, propertyRadiusX, propertyRadiusY);
 
-        // Determine which property was changed and apply immediately
-        if (sender == propertyX)
-        {
-            double oldValue = Canvas.GetLeft(selectedElement);
-            if (double.IsNaN(oldValue)) oldValue = 0;
-            if (Math.Abs(newValue - oldValue) > 0.01)
-            {
-                Canvas.SetLeft(selectedElement, oldValue);
-                commandManager.ExecuteCommand(new ChangePropertyCommand(selectedElement, "X", oldValue, newValue));
-                UpdateUndoRedoButtons();
-                isDirty = true;
-            }
-        }
-        else if (sender == propertyY)
-        {
-            double oldValue = Canvas.GetTop(selectedElement);
-            if (double.IsNaN(oldValue)) oldValue = 0;
-            if (Math.Abs(newValue - oldValue) > 0.01)
-            {
-                Canvas.SetTop(selectedElement, oldValue);
-                commandManager.ExecuteCommand(new ChangePropertyCommand(selectedElement, "Y", oldValue, newValue));
-                UpdateUndoRedoButtons();
-                isDirty = true;
-            }
-        }
-        else if (sender == propertyWidth)
-        {
-            if (selectedElement is FrameworkElement fe)
-            {
-                double oldValue = fe.Width;
-                if (Math.Abs(newValue - oldValue) > 0.01)
-                {
-                    fe.Width = oldValue;
-                    commandManager.ExecuteCommand(new ChangePropertyCommand(selectedElement, "Width", oldValue, newValue));
-                    UpdateUndoRedoButtons();
-                    isDirty = true;
-                }
-            }
-        }
-        else if (sender == propertyHeight)
-        {
-            if (selectedElement is FrameworkElement fe)
-            {
-                double oldValue = fe.Height;
-                if (Math.Abs(newValue - oldValue) > 0.01)
-                {
-                    fe.Height = oldValue;
-                    commandManager.ExecuteCommand(new ChangePropertyCommand(selectedElement, "Height", oldValue, newValue));
-                    UpdateUndoRedoButtons();
-                    isDirty = true;
-                }
-            }
-        }
-        else if (sender == propertyFontSize && selectedElement is TextBlock textBlock)
-        {
-            double oldValue = textBlock.FontSize;
-            if (Math.Abs(newValue - oldValue) > 0.01)
-            {
-                textBlock.FontSize = oldValue;
-                commandManager.ExecuteCommand(new ChangeTextPropertyCommand(textBlock, "FontSize", oldValue, newValue));
-                UpdateUndoRedoButtons();
-                isDirty = true;
-            }
-        }
-        else if (sender == propertyStrokeThickness && selectedElement is Shape shape)
-        {
-            double oldValue = shape.StrokeThickness;
-            if (Math.Abs(newValue - oldValue) > 0.01)
-            {
-                shape.StrokeThickness = oldValue;
-                commandManager.ExecuteCommand(new ChangeShapePropertyCommand(shape, "StrokeThickness", oldValue, newValue));
-                UpdateUndoRedoButtons();
-                isDirty = true;
-            }
-        }
-        else if (sender == propertyRadiusX && selectedElement is Rectangle rect)
-        {
-            double oldValue = rect.RadiusX;
-            if (Math.Abs(newValue - oldValue) > 0.01)
-            {
-                rect.RadiusX = oldValue;
-                commandManager.ExecuteCommand(new ChangeShapePropertyCommand(rect, "RadiusX", oldValue, newValue));
-                UpdateUndoRedoButtons();
-                isDirty = true;
-            }
-        }
-        else if (sender == propertyRadiusY && selectedElement is Rectangle rect2)
-        {
-            double oldValue = rect2.RadiusY;
-            if (Math.Abs(newValue - oldValue) > 0.01)
-            {
-                rect2.RadiusY = oldValue;
-                commandManager.ExecuteCommand(new ChangeShapePropertyCommand(rect2, "RadiusY", oldValue, newValue));
-                UpdateUndoRedoButtons();
-                isDirty = true;
-            }
-        }
-    }
-
+    // Position/Size property handlers
     private void PropertyX_LostFocus(object sender, RoutedEventArgs e)
-    {
-        if (selectedElement == null) return;
-
-        double newValueMm = propertyX.Value;
-
-        if (Math.Abs(newValueMm - initialPropertyValue) > 0.01)
-        {
-            // Value changed - create command (convert mm to pixels)
-            double oldValuePixels = initialPropertyValue * MM_TO_PIXELS;
-            double newValuePixels = newValueMm * MM_TO_PIXELS;
-            Canvas.SetLeft(selectedElement, oldValuePixels);
-            commandManager.ExecuteCommand(new ChangePropertyCommand(selectedElement, "X", oldValuePixels, newValuePixels));
-            UpdateUndoRedoButtons();
-            UpdatePropertiesPanel();
-            isDirty = true;
-        }
-    }
+        => _propertyPanelController?.HandlePropertyXLostFocus(propertyX);
 
     private void PropertyY_LostFocus(object sender, RoutedEventArgs e)
-    {
-        if (selectedElement == null) return;
-
-        double newValueMm = propertyY.Value;
-
-        if (Math.Abs(newValueMm - initialPropertyValue) > 0.01)
-        {
-            // Value changed - create command (convert mm to pixels)
-            double oldValuePixels = initialPropertyValue * MM_TO_PIXELS;
-            double newValuePixels = newValueMm * MM_TO_PIXELS;
-            Canvas.SetTop(selectedElement, oldValuePixels);
-            commandManager.ExecuteCommand(new ChangePropertyCommand(selectedElement, "Y", oldValuePixels, newValuePixels));
-            UpdateUndoRedoButtons();
-            UpdatePropertiesPanel();
-            isDirty = true;
-        }
-    }
+        => _propertyPanelController?.HandlePropertyYLostFocus(propertyY);
 
     private void PropertyWidth_LostFocus(object sender, RoutedEventArgs e)
-    {
-        if (selectedElement is not FrameworkElement element) return;
-
-        double newValueMm = propertyWidth.Value;
-
-        if (Math.Abs(newValueMm - initialPropertyValue) > 0.01)
-        {
-            // Value changed - create command (convert mm to pixels)
-            double oldValuePixels = initialPropertyValue * MM_TO_PIXELS;
-            double newValuePixels = newValueMm * MM_TO_PIXELS;
-            element.Width = oldValuePixels;
-            commandManager.ExecuteCommand(new ChangePropertyCommand(element, "Width", oldValuePixels, newValuePixels));
-            UpdateUndoRedoButtons();
-            UpdatePropertiesPanel();
-            isDirty = true;
-        }
-    }
+        => _propertyPanelController?.HandlePropertyWidthLostFocus(propertyWidth);
 
     private void PropertyHeight_LostFocus(object sender, RoutedEventArgs e)
-    {
-        if (selectedElement is not FrameworkElement element) return;
-
-        double newValueMm = propertyHeight.Value;
-
-        if (Math.Abs(newValueMm - initialPropertyValue) > 0.01)
-        {
-            // Value changed - create command (convert mm to pixels)
-            double oldValuePixels = initialPropertyValue * MM_TO_PIXELS;
-            double newValuePixels = newValueMm * MM_TO_PIXELS;
-            element.Height = oldValuePixels;
-            commandManager.ExecuteCommand(new ChangePropertyCommand(element, "Height", oldValuePixels, newValuePixels));
-            UpdateUndoRedoButtons();
-            UpdatePropertiesPanel();
-            isDirty = true;
-        }
-    }
+        => _propertyPanelController?.HandlePropertyHeightLostFocus(propertyHeight);
 
     private void PropertyX2_LostFocus(object sender, RoutedEventArgs e)
-    {
-        if (selectedElement == null) return;
-
-        double newValueMm = propertyX2.Value;
-
-        if (Math.Abs(newValueMm - initialPropertyValue) > 0.01)
-        {
-            // Value changed - create command (convert mm to pixels)
-            double oldValuePixels = initialPropertyValue * MM_TO_PIXELS;
-            double newValuePixels = newValueMm * MM_TO_PIXELS;
-
-            if (selectedElement is Line line)
-            {
-                line.X2 = oldValuePixels;
-                commandManager.ExecuteCommand(new ChangePropertyCommand(line, "X2", oldValuePixels, newValuePixels));
-            }
-            else if (selectedElement is Canvas arrowCanvas && arrowCanvas.Tag is Tuple<Line, Polygon, Polygon, CanvasElement>)
-            {
-                // For arrows, update the line's X2 and recalculate arrowheads
-                var arrowData = (Tuple<Line, Polygon, Polygon, CanvasElement>)arrowCanvas.Tag;
-                UpdateArrowEndpoint(arrowCanvas, newValuePixels, propertyY2.Value * MM_TO_PIXELS, isX2: true);
-            }
-
-            UpdateUndoRedoButtons();
-            UpdatePropertiesPanel();
-            isDirty = true;
-        }
-    }
+        => _propertyPanelController?.HandlePropertyX2LostFocus(propertyX2);
 
     private void PropertyY2_LostFocus(object sender, RoutedEventArgs e)
-    {
-        if (selectedElement == null) return;
-
-        double newValueMm = propertyY2.Value;
-
-        if (Math.Abs(newValueMm - initialPropertyValue) > 0.01)
-        {
-            // Value changed - create command (convert mm to pixels)
-            double oldValuePixels = initialPropertyValue * MM_TO_PIXELS;
-            double newValuePixels = newValueMm * MM_TO_PIXELS;
-
-            if (selectedElement is Line line)
-            {
-                line.Y2 = oldValuePixels;
-                commandManager.ExecuteCommand(new ChangePropertyCommand(line, "Y2", oldValuePixels, newValuePixels));
-            }
-            else if (selectedElement is Canvas arrowCanvas && arrowCanvas.Tag is Tuple<Line, Polygon, Polygon, CanvasElement>)
-            {
-                // For arrows, update the line's Y2 and recalculate arrowheads
-                var arrowData = (Tuple<Line, Polygon, Polygon, CanvasElement>)arrowCanvas.Tag;
-                UpdateArrowEndpoint(arrowCanvas, propertyX2.Value * MM_TO_PIXELS, newValuePixels, isX2: false);
-            }
-
-            UpdateUndoRedoButtons();
-            UpdatePropertiesPanel();
-            isDirty = true;
-        }
-    }
+        => _propertyPanelController?.HandlePropertyY2LostFocus(propertyY2);
 
     // Text formatting event handlers
     private void PropertyText_LostFocus(object sender, RoutedEventArgs e)
     {
-        if (selectedElement is not TextBlock textBlock || sender is not TextBox textBox)
-            return;
-
-        string newValue = textBox.Text;
-        string oldValue = initialStringValue ?? textBlock.Text;
-
-        if (newValue != oldValue)
-        {
-            // Value changed - create command
-            commandManager.ExecuteCommand(new ChangeTextPropertyCommand(textBlock, "Text", oldValue, newValue));
-            UpdateUndoRedoButtons();
-            UpdatePropertiesPanel();
-            isDirty = true;
-        }
+        if (sender is TextBox textBox)
+            _propertyPanelController?.HandlePropertyTextLostFocus(textBox);
     }
 
     private void PropertyText_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Enter && sender is TextBox textBox)
-        {
-            // Trigger the LostFocus logic by moving focus away
-            textBox.MoveFocus(new TraversalRequest(FocusNavigationDirection.Next));
-            e.Handled = true;
-        }
+        if (sender is TextBox textBox)
+            _propertyPanelController?.HandlePropertyTextPreviewKeyDown(textBox, e);
     }
 
     private void PropertyFontFamily_LostFocus(object sender, RoutedEventArgs e)
     {
-        if (selectedElement is not TextBlock textBlock || sender is not ComboBox comboBox)
-            return;
-
-        if (comboBox.SelectedItem == null)
-            return;
-
-        string newValue = comboBox.SelectedItem.ToString()!;
-        string oldValue = initialStringValue ?? textBlock.FontFamily.Source;
-
-        if (newValue != oldValue)
-        {
-            // Value changed - create command
-            textBlock.FontFamily = new FontFamily(oldValue);
-            commandManager.ExecuteCommand(new ChangeTextPropertyCommand(textBlock, "FontFamily", oldValue, newValue));
-            UpdateUndoRedoButtons();
-            UpdatePropertiesPanel();
-            isDirty = true;
-        }
+        if (sender is ComboBox comboBox)
+            _propertyPanelController?.HandlePropertyFontFamilyLostFocus(comboBox);
     }
 
     private void PropertyFontSize_Changed(object sender, SelectionChangedEventArgs e)
     {
-        if (selectedElement is not TextBlock textBlock || sender is not ComboBox comboBox)
-            return;
-
-        // Get the font size from the selected item's Tag
-        if (comboBox.SelectedItem is ComboBoxItem item && item.Tag != null)
-        {
-            if (double.TryParse(item.Tag.ToString(), out double newValue))
-            {
-                double oldValue = textBlock.FontSize;
-
-                if (Math.Abs(newValue - oldValue) > 0.01)
-                {
-                    // Value changed - create command
-                    textBlock.FontSize = oldValue;
-                    commandManager.ExecuteCommand(new ChangeTextPropertyCommand(textBlock, "FontSize", oldValue, newValue));
-                    UpdateUndoRedoButtons();
-                    UpdatePropertiesPanel();
-                    isDirty = true;
-                }
-            }
-        }
+        if (sender is ComboBox comboBox)
+            _propertyPanelController?.HandlePropertyFontSizeChanged(comboBox);
     }
 
     private void PropertyFontSize_LostFocus(object sender, RoutedEventArgs e)
     {
-        if (selectedElement is not TextBlock textBlock || sender is not ComboBox comboBox)
-            return;
-
-        // Handle manual text input (when user types directly)
-        string text = comboBox.Text;
-
-        // Try to parse as direct pt value
-        if (!double.TryParse(text, out double newValue))
-            return;
-
-        // If initialPropertyValue is invalid (0 or negative), use the current FontSize
-        double oldValue = initialPropertyValue > 0 ? initialPropertyValue : textBlock.FontSize;
-
-        if (Math.Abs(newValue - oldValue) > 0.01)
-        {
-            // Value changed - create command
-            textBlock.FontSize = oldValue;
-            commandManager.ExecuteCommand(new ChangeTextPropertyCommand(textBlock, "FontSize", oldValue, newValue));
-            UpdateUndoRedoButtons();
-            UpdatePropertiesPanel();
-            isDirty = true;
-        }
+        if (sender is ComboBox comboBox)
+            _propertyPanelController?.HandlePropertyFontSizeLostFocus(comboBox);
     }
 
     private void PropertyColor_Click(object sender, RoutedEventArgs e)
-    {
-        if (selectedElement is not TextBlock textBlock) return;
-
-        var currentBrush = textBlock.Foreground as SolidColorBrush;
-        WpfColor currentColor = currentBrush?.Color ?? Colors.Black;
-
-        using var dialog = new System.Windows.Forms.ColorDialog
-        {
-            Color = FormsColor.FromArgb(currentColor.A, currentColor.R, currentColor.G, currentColor.B),
-            FullOpen = true
-        };
-
-        if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
-        {
-            var newColor = WpfColor.FromArgb(dialog.Color.A, dialog.Color.R, dialog.Color.G, dialog.Color.B);
-            string newValue = newColor.ToString();
-            string oldValue = currentColor.ToString();
-
-            if (newValue != oldValue)
-            {
-                commandManager.ExecuteCommand(new ChangeTextPropertyCommand(textBlock, "Foreground", oldValue, newValue));
-                UpdateUndoRedoButtons();
-                UpdatePropertiesPanel();
-                isDirty = true;
-            }
-        }
-    }
+        => _propertyPanelController?.HandlePropertyColorClick();
 
     private void PropertyAlignment_LostFocus(object sender, RoutedEventArgs e)
     {
-        if (selectedElement is not TextBlock textBlock || sender is not ComboBox comboBox)
-            return;
-
-        if (comboBox.SelectedItem == null)
-            return;
-
-        // Map from displayed text to enum value
-        string displayText = ((ComboBoxItem)comboBox.SelectedItem).Content.ToString()!;
-        string newValue = displayText switch
-        {
-            "Links" => "Left",
-            "Mitte" => "Center",
-            "Rechts" => "Right",
-            _ => "Left"
-        };
-
-        string oldValue = initialStringValue ?? textBlock.TextAlignment.ToString();
-
-        if (newValue != oldValue)
-        {
-            // Value changed - create command
-            textBlock.TextAlignment = Enum.Parse<TextAlignment>(oldValue);
-            commandManager.ExecuteCommand(new ChangeTextPropertyCommand(textBlock, "TextAlignment", oldValue, newValue));
-            UpdateUndoRedoButtons();
-            UpdatePropertiesPanel();
-            isDirty = true;
-        }
+        if (sender is ComboBox comboBox)
+            _propertyPanelController?.HandlePropertyAlignmentLostFocus(comboBox);
     }
 
     private void PropertyBold_Changed(object sender, RoutedEventArgs e)
     {
-        if (selectedElement is not TextBlock textBlock || sender is not CheckBox checkBox)
-            return;
-
-        bool newChecked = checkBox.IsChecked == true;
-        string newValue = newChecked ? "Bold" : "Normal";
-        string oldValue = (textBlock.FontWeight == FontWeights.Bold) ? "Bold" : "Normal";
-
-        if (newValue != oldValue)
-        {
-            // Value changed - create command
-            textBlock.FontWeight = oldValue == "Bold" ? FontWeights.Bold : FontWeights.Normal;
-            commandManager.ExecuteCommand(new ChangeTextPropertyCommand(textBlock, "FontWeight", oldValue, newValue));
-            UpdateUndoRedoButtons();
-            UpdatePropertiesPanel();
-            isDirty = true;
-        }
+        if (sender is CheckBox checkBox)
+            _propertyPanelController?.HandlePropertyBoldChanged(checkBox);
     }
 
     private void PropertyItalic_Changed(object sender, RoutedEventArgs e)
     {
-        if (selectedElement is not TextBlock textBlock || sender is not CheckBox checkBox)
-            return;
-
-        bool newChecked = checkBox.IsChecked == true;
-        string newValue = newChecked ? "Italic" : "Normal";
-        string oldValue = (textBlock.FontStyle == FontStyles.Italic) ? "Italic" : "Normal";
-
-        if (newValue != oldValue)
-        {
-            // Value changed - create command
-            textBlock.FontStyle = oldValue == "Italic" ? FontStyles.Italic : FontStyles.Normal;
-            commandManager.ExecuteCommand(new ChangeTextPropertyCommand(textBlock, "FontStyle", oldValue, newValue));
-            UpdateUndoRedoButtons();
-            UpdatePropertiesPanel();
-            isDirty = true;
-        }
+        if (sender is CheckBox checkBox)
+            _propertyPanelController?.HandlePropertyItalicChanged(checkBox);
     }
 
     // Shape styling event handlers
     private void PropertyFillColor_Click(object sender, RoutedEventArgs e)
-    {
-        if (selectedElement is not Shape shape) return;
-
-        var currentBrush = shape.Fill as SolidColorBrush;
-        WpfColor currentColor = currentBrush?.Color ?? Colors.White;
-
-        using var dialog = new System.Windows.Forms.ColorDialog
-        {
-            Color = FormsColor.FromArgb(currentColor.A, currentColor.R, currentColor.G, currentColor.B),
-            FullOpen = true
-        };
-
-        if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
-        {
-            var newColor = WpfColor.FromArgb(dialog.Color.A, dialog.Color.R, dialog.Color.G, dialog.Color.B);
-            string newValue = newColor.ToString();
-            string oldValue = currentColor.ToString();
-
-            if (newValue != oldValue)
-            {
-                commandManager.ExecuteCommand(new ChangeShapePropertyCommand(shape, "Fill", oldValue, newValue));
-                UpdateUndoRedoButtons();
-                UpdatePropertiesPanel();
-                isDirty = true;
-            }
-        }
-    }
+        => _propertyPanelController?.HandlePropertyFillColorClick();
 
     private void PropertyStrokeColor_Click(object sender, RoutedEventArgs e)
-    {
-        // Handle Arrow elements (Canvas containing Line)
-        if (selectedElement is Canvas arrowCanvas && arrowCanvas.Tag is Tuple<Line, Polygon, Polygon, CanvasElement> arrowData)
-        {
-            var line = arrowData.Item1;
-            var currentBrush = line.Stroke as SolidColorBrush;
-            WpfColor currentColor = currentBrush?.Color ?? Colors.Black;
-
-            using var dialog = new System.Windows.Forms.ColorDialog
-            {
-                Color = FormsColor.FromArgb(currentColor.A, currentColor.R, currentColor.G, currentColor.B),
-                FullOpen = true
-            };
-
-            if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
-            {
-                var newColor = WpfColor.FromArgb(dialog.Color.A, dialog.Color.R, dialog.Color.G, dialog.Color.B);
-                var newBrush = new SolidColorBrush(newColor);
-
-                // Update line and arrowheads
-                line.Stroke = newBrush;
-                if (arrowData.Item2 != null) // start arrow
-                {
-                    arrowData.Item2.Fill = newBrush;
-                    arrowData.Item2.Stroke = newBrush;
-                }
-                if (arrowData.Item3 != null) // end arrow
-                {
-                    arrowData.Item3.Fill = newBrush;
-                    arrowData.Item3.Stroke = newBrush;
-                }
-
-                UpdatePropertiesPanel();
-                isDirty = true;
-            }
-            return;
-        }
-
-        // Handle Line elements
-        if (selectedElement is Line lineElement)
-        {
-            var currentBrush = lineElement.Stroke as SolidColorBrush;
-            WpfColor currentColor = currentBrush?.Color ?? Colors.Black;
-
-            using var dialog = new System.Windows.Forms.ColorDialog
-            {
-                Color = FormsColor.FromArgb(currentColor.A, currentColor.R, currentColor.G, currentColor.B),
-                FullOpen = true
-            };
-
-            if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
-            {
-                var newColor = WpfColor.FromArgb(dialog.Color.A, dialog.Color.R, dialog.Color.G, dialog.Color.B);
-                var newBrush = new SolidColorBrush(newColor);
-                lineElement.Stroke = newBrush;
-                UpdatePropertiesPanel();
-                isDirty = true;
-            }
-            return;
-        }
-
-        // Handle regular Shape elements
-        if (selectedElement is not Shape shape) return;
-
-        var shapeCurrentBrush = shape.Stroke as SolidColorBrush;
-        WpfColor shapeCurrentColor = shapeCurrentBrush?.Color ?? Colors.Black;
-
-        using var shapeDialog = new System.Windows.Forms.ColorDialog
-        {
-            Color = FormsColor.FromArgb(shapeCurrentColor.A, shapeCurrentColor.R, shapeCurrentColor.G, shapeCurrentColor.B),
-            FullOpen = true
-        };
-
-        if (shapeDialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
-        {
-            var newColor = WpfColor.FromArgb(shapeDialog.Color.A, shapeDialog.Color.R, shapeDialog.Color.G, shapeDialog.Color.B);
-            string newValue = newColor.ToString();
-            string oldValue = shapeCurrentColor.ToString();
-
-            if (newValue != oldValue)
-            {
-                commandManager.ExecuteCommand(new ChangeShapePropertyCommand(shape, "Stroke", oldValue, newValue));
-                UpdateUndoRedoButtons();
-                UpdatePropertiesPanel();
-                isDirty = true;
-            }
-        }
-    }
+        => _propertyPanelController?.HandlePropertyStrokeColorClick();
 
     private void PropertyStrokeThickness_LostFocus(object sender, RoutedEventArgs e)
-    {
-        double newValue = propertyStrokeThickness.Value;
-
-        // Handle Arrow elements (Canvas containing Line)
-        if (selectedElement is Canvas arrowCanvas && arrowCanvas.Tag is Tuple<Line, Polygon, Polygon, CanvasElement>  arrowData)
-        {
-            var line = arrowData.Item1;
-            if (Math.Abs(newValue - initialPropertyValue) > 0.01)
-            {
-                line.StrokeThickness = newValue;
-                UpdatePropertiesPanel();
-                isDirty = true;
-            }
-            return;
-        }
-
-        // Handle Line elements
-        if (selectedElement is Line lineElement)
-        {
-            if (Math.Abs(newValue - initialPropertyValue) > 0.01)
-            {
-                lineElement.StrokeThickness = newValue;
-                UpdatePropertiesPanel();
-                isDirty = true;
-            }
-            return;
-        }
-
-        // Handle regular Shape elements
-        if (selectedElement is not Shape shape) return;
-
-        if (Math.Abs(newValue - initialPropertyValue) > 0.01)
-        {
-            // Value changed - create command
-            shape.StrokeThickness = initialPropertyValue;
-            commandManager.ExecuteCommand(new ChangeShapePropertyCommand(shape, "StrokeThickness", initialPropertyValue, newValue));
-            UpdateUndoRedoButtons();
-            UpdatePropertiesPanel();
-            isDirty = true;
-        }
-    }
+        => _propertyPanelController?.HandlePropertyStrokeThicknessLostFocus(propertyStrokeThickness);
 
     // Extended shape property event handlers
     private void PropertyRadiusX_LostFocus(object sender, RoutedEventArgs e)
-    {
-        if (selectedElement is not Rectangle rect) return;
-
-        double newValue = propertyRadiusX.Value;
-
-        if (Math.Abs(newValue - initialPropertyValue) > 0.01)
-        {
-            // Value changed - create command
-            rect.RadiusX = initialPropertyValue;
-            commandManager.ExecuteCommand(new ChangeShapePropertyCommand(rect, "RadiusX", initialPropertyValue, newValue));
-            UpdateUndoRedoButtons();
-            UpdatePropertiesPanel();
-            isDirty = true;
-        }
-    }
+        => _propertyPanelController?.HandlePropertyRadiusXLostFocus(propertyRadiusX);
 
     private void PropertyRadiusY_LostFocus(object sender, RoutedEventArgs e)
-    {
-        if (selectedElement is not Rectangle rect) return;
-
-        double newValue = propertyRadiusY.Value;
-
-        if (Math.Abs(newValue - initialPropertyValue) > 0.01)
-        {
-            // Value changed - create command
-            rect.RadiusY = initialPropertyValue;
-            commandManager.ExecuteCommand(new ChangeShapePropertyCommand(rect, "RadiusY", initialPropertyValue, newValue));
-            UpdateUndoRedoButtons();
-            UpdatePropertiesPanel();
-            isDirty = true;
-        }
-    }
+        => _propertyPanelController?.HandlePropertyRadiusYLostFocus(propertyRadiusY);
 
     private void PropertyStrokeDashPattern_Changed(object sender, SelectionChangedEventArgs e)
     {
-        if (selectedElement is not Shape shape || propertyStrokeDashPattern.SelectedItem is not ComboBoxItem item)
-            return;
-
-        string newPattern = item.Tag?.ToString() ?? "Solid";
-        string oldPattern = DetectDashPattern(shape.StrokeDashArray);
-
-        if (oldPattern != newPattern)
-        {
-            commandManager.ExecuteCommand(new ChangeShapePropertyCommand(shape, "StrokeDashPattern", oldPattern, newPattern));
-            UpdateUndoRedoButtons();
-            UpdatePropertiesPanel();
-            isDirty = true;
-        }
+        if (sender is ComboBox comboBox)
+            _propertyPanelController?.HandlePropertyStrokeDashPatternChanged(comboBox);
     }
 
     private void PropertyUseGradientFill_Changed(object sender, RoutedEventArgs e)
     {
-        if (selectedElement is not Shape shape) return;
-
-        bool newValue = propertyUseGradientFill.IsChecked == true;
-        bool oldValue = shape.Fill is LinearGradientBrush;
-
-        if (oldValue != newValue)
-        {
-            commandManager.ExecuteCommand(new ChangeShapePropertyCommand(shape, "UseGradientFill", oldValue, newValue));
-            UpdateUndoRedoButtons();
-            UpdatePropertiesPanel();
-            isDirty = true;
-        }
+        if (sender is CheckBox checkBox)
+            _propertyPanelController?.HandlePropertyUseGradientFillChanged(checkBox);
     }
 
     private void PropertyGradientStart_Click(object sender, RoutedEventArgs e)
-    {
-        if (selectedElement is not Shape shape || shape.Fill is not LinearGradientBrush gradientBrush)
-            return;
-        if (gradientBrush.GradientStops.Count < 1)
-            return;
-
-        WpfColor currentColor = gradientBrush.GradientStops[0].Color;
-
-        using var dialog = new System.Windows.Forms.ColorDialog
-        {
-            Color = FormsColor.FromArgb(currentColor.A, currentColor.R, currentColor.G, currentColor.B),
-            FullOpen = true
-        };
-
-        if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
-        {
-            var newColor = WpfColor.FromArgb(dialog.Color.A, dialog.Color.R, dialog.Color.G, dialog.Color.B);
-            string newValue = newColor.ToString();
-            string oldValue = currentColor.ToString();
-
-            if (newValue != oldValue)
-            {
-                commandManager.ExecuteCommand(new ChangeShapePropertyCommand(shape, "GradientStartColor", oldValue, newValue));
-                UpdateUndoRedoButtons();
-                UpdatePropertiesPanel();
-                isDirty = true;
-            }
-        }
-    }
+        => _propertyPanelController?.HandlePropertyGradientStartClick();
 
     private void PropertyGradientEnd_Click(object sender, RoutedEventArgs e)
-    {
-        if (selectedElement is not Shape shape || shape.Fill is not LinearGradientBrush gradientBrush)
-            return;
-        if (gradientBrush.GradientStops.Count < 2)
-            return;
-
-        WpfColor currentColor = gradientBrush.GradientStops[^1].Color;
-
-        using var dialog = new System.Windows.Forms.ColorDialog
-        {
-            Color = FormsColor.FromArgb(currentColor.A, currentColor.R, currentColor.G, currentColor.B),
-            FullOpen = true
-        };
-
-        if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
-        {
-            var newColor = WpfColor.FromArgb(dialog.Color.A, dialog.Color.R, dialog.Color.G, dialog.Color.B);
-            string newValue = newColor.ToString();
-            string oldValue = currentColor.ToString();
-
-            if (newValue != oldValue)
-            {
-                commandManager.ExecuteCommand(new ChangeShapePropertyCommand(shape, "GradientEndColor", oldValue, newValue));
-                UpdateUndoRedoButtons();
-                UpdatePropertiesPanel();
-                isDirty = true;
-            }
-        }
-    }
+        => _propertyPanelController?.HandlePropertyGradientEndClick();
 
     private void PropertyGradientAngle_LostFocus(object sender, RoutedEventArgs e)
-    {
-        if (selectedElement is not Shape shape) return;
-
-        double newValue = propertyGradientAngle.Value;
-
-        if (Math.Abs(newValue - initialPropertyValue) > 0.01)
-        {
-            commandManager.ExecuteCommand(new ChangeShapePropertyCommand(shape, "GradientAngle", initialPropertyValue, newValue));
-            UpdateUndoRedoButtons();
-            UpdatePropertiesPanel();
-            isDirty = true;
-        }
-    }
-
-    // Helper methods for extended shape properties
-    private string DetectDashPattern(DoubleCollection? dashArray)
-    {
-        if (dashArray == null || dashArray.Count == 0) return "Solid";
-
-        // Compare with known patterns
-        if (IsArrayEqual(dashArray, new[] { 2.0, 2.0 })) return "Dash";
-        if (IsArrayEqual(dashArray, new[] { 1.0, 2.0 })) return "Dot";
-        if (IsArrayEqual(dashArray, new[] { 2.0, 2.0, 1.0, 2.0 })) return "DashDot";
-
-        return "Solid";
-    }
-
-    private int DetectDashPatternIndex(DoubleCollection? dashArray)
-    {
-        return DetectDashPattern(dashArray) switch
-        {
-            "Solid" => 0,
-            "Dash" => 1,
-            "Dot" => 2,
-            "DashDot" => 3,
-            _ => 0
-        };
-    }
-
-    private bool IsArrayEqual(DoubleCollection array, double[] pattern)
-    {
-        if (array.Count != pattern.Length) return false;
-        for (int i = 0; i < pattern.Length; i++)
-        {
-            if (Math.Abs(array[i] - pattern[i]) > 0.01) return false;
-        }
-        return true;
-    }
-
-    private void ApplyDashPattern(Shape shape, string pattern)
-    {
-        shape.StrokeDashArray = pattern switch
-        {
-            "Dash" => new DoubleCollection { 2, 2 },
-            "Dot" => new DoubleCollection { 1, 2 },
-            "DashDot" => new DoubleCollection { 2, 2, 1, 2 },
-            _ => null
-        };
-    }
-
-    private double CalculateGradientAngle(LinearGradientBrush brush)
-    {
-        // Calculate angle from StartPoint/EndPoint
-        double dx = brush.EndPoint.X - brush.StartPoint.X;
-        double dy = brush.EndPoint.Y - brush.StartPoint.Y;
-        double angle = Math.Atan2(dy, dx) * 180 / Math.PI;
-        return (angle + 360) % 360;
-    }
-
-    private LinearGradientBrush CreateGradientBrush(WpfColor startColor, WpfColor endColor, double angle)
-    {
-        double radians = angle * Math.PI / 180;
-        var brush = new LinearGradientBrush
-        {
-            StartPoint = new Point(0.5 - Math.Cos(radians) * 0.5, 0.5 - Math.Sin(radians) * 0.5),
-            EndPoint = new Point(0.5 + Math.Cos(radians) * 0.5, 0.5 + Math.Sin(radians) * 0.5)
-        };
-        brush.GradientStops.Add(new GradientStop(startColor, 0));
-        brush.GradientStops.Add(new GradientStop(endColor, 1));
-        return brush;
-    }
+        => _propertyPanelController?.HandlePropertyGradientAngleLostFocus(propertyGradientAngle);
 
     // Image filter event handlers
     private void PropertyMonochromeEnabled_Changed(object sender, RoutedEventArgs e)
     {
-        if (selectedElement is not Image imageElement || sender is not CheckBox checkBox)
-            return;
-
-        if (imageElement.Tag is not Tuple<CanvasElement, BitmapSource> tuple)
-            return;
-
-        var canvasElement = tuple.Item1;
-        bool oldValue = canvasElement.MonochromeEnabled ?? false;
-        bool newValue = checkBox.IsChecked ?? false;
-
-        if (newValue != oldValue)
-        {
-            // Show/hide monochrome controls
-            panelMonochromeControls.Visibility = newValue ? Visibility.Visible : Visibility.Collapsed;
-
-            // Value changed - create command
-            commandManager.ExecuteCommand(new ChangeImagePropertyCommand(imageElement, "MonochromeEnabled", oldValue, newValue, ApplyImageFilter));
-            UpdateUndoRedoButtons();
-            isDirty = true;
-        }
+        if (sender is CheckBox checkBox)
+            _propertyPanelController?.HandlePropertyMonochromeEnabledChanged(checkBox, panelMonochromeControls, ApplyImageFilter);
     }
 
     private void PropertyThreshold_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
-        if (selectedElement is not Image imageElement || sender is not Slider slider)
-            return;
-
-        // Update the value display
-        propertyThresholdValue.Text = ((int)slider.Value).ToString();
-
-        // If monochrome is enabled, apply filter immediately for real-time preview
-        if (imageElement.Tag is Tuple<CanvasElement, BitmapSource> tuple)
-        {
-            var canvasElement = tuple.Item1;
-            if (canvasElement.MonochromeEnabled == true)
-            {
-                // Update the threshold value (without creating undo command yet)
-                canvasElement.Threshold = (byte)slider.Value;
-                ApplyImageFilter(imageElement);
-            }
-        }
+        if (sender is Slider slider)
+            _propertyPanelController?.HandlePropertyThresholdValueChanged(slider, propertyThresholdValue, ApplyImageFilter);
     }
 
     private void PropertyThreshold_LostFocus(object sender, RoutedEventArgs e)
     {
-        if (selectedElement is not Image imageElement || sender is not Slider slider)
-            return;
-
-        if (imageElement.Tag is not Tuple<CanvasElement, BitmapSource> tuple)
-            return;
-
-        var canvasElement = tuple.Item1;
-        byte newValue = (byte)slider.Value;
-        byte oldValue = (byte)initialPropertyValue;
-
-        if (newValue != oldValue)
-        {
-            // Value changed - create command for undo/redo
-            canvasElement.Threshold = oldValue; // Reset to old value
-            commandManager.ExecuteCommand(new ChangeImagePropertyCommand(imageElement, "Threshold", oldValue, newValue, ApplyImageFilter));
-            UpdateUndoRedoButtons();
-            isDirty = true;
-        }
+        if (sender is Slider slider)
+            _propertyPanelController?.HandlePropertyThresholdLostFocus(slider, ApplyImageFilter);
     }
 
     private void PropertyAlgorithm_Changed(object sender, SelectionChangedEventArgs e)
     {
-        if (selectedElement is not Image imageElement || sender is not ComboBox comboBox)
-            return;
-
-        if (imageElement.Tag is not Tuple<CanvasElement, BitmapSource> tuple)
-            return;
-
-        if (comboBox.SelectedItem is not ComboBoxItem item)
-            return;
-
-        var canvasElement = tuple.Item1;
-        string newValue = item.Tag?.ToString() ?? "Threshold";
-        string oldValue = canvasElement.MonochromeAlgorithm ?? "Threshold";
-
-        if (newValue != oldValue)
-        {
-            commandManager.ExecuteCommand(new ChangeImagePropertyCommand(imageElement, "Algorithm", oldValue, newValue, ApplyImageFilter));
-            UpdateUndoRedoButtons();
-            isDirty = true;
-        }
+        if (sender is ComboBox comboBox)
+            _propertyPanelController?.HandlePropertyAlgorithmChanged(comboBox, ApplyImageFilter);
     }
 
     private void PropertyBrightness_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
-        if (selectedElement is not Image imageElement || sender is not Slider slider)
-            return;
-
-        // Update the value display
-        propertyBrightnessValue.Text = ((int)slider.Value).ToString();
-
-        // If monochrome is enabled, apply filter immediately for real-time preview
-        if (imageElement.Tag is Tuple<CanvasElement, BitmapSource> tuple)
-        {
-            var canvasElement = tuple.Item1;
-            if (canvasElement.MonochromeEnabled == true)
-            {
-                canvasElement.Brightness = slider.Value;
-                ApplyImageFilter(imageElement);
-            }
-        }
+        if (sender is Slider slider)
+            _propertyPanelController?.HandlePropertyBrightnessValueChanged(slider, propertyBrightnessValue, ApplyImageFilter);
     }
 
     private void PropertyBrightness_LostFocus(object sender, RoutedEventArgs e)
     {
-        if (selectedElement is not Image imageElement || sender is not Slider slider)
-            return;
-
-        if (imageElement.Tag is not Tuple<CanvasElement, BitmapSource> tuple)
-            return;
-
-        var canvasElement = tuple.Item1;
-        double newValue = slider.Value;
-        double oldValue = initialPropertyValue;
-
-        if (Math.Abs(newValue - oldValue) > 0.01)
-        {
-            canvasElement.Brightness = oldValue;
-            commandManager.ExecuteCommand(new ChangeImagePropertyCommand(imageElement, "Brightness", oldValue, newValue, ApplyImageFilter));
-            UpdateUndoRedoButtons();
-            isDirty = true;
-        }
+        if (sender is Slider slider)
+            _propertyPanelController?.HandlePropertyBrightnessLostFocus(slider, ApplyImageFilter);
     }
 
     private void PropertyContrast_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
-        if (selectedElement is not Image imageElement || sender is not Slider slider)
-            return;
-
-        // Update the value display
-        propertyContrastValue.Text = ((int)slider.Value).ToString();
-
-        // If monochrome is enabled, apply filter immediately for real-time preview
-        if (imageElement.Tag is Tuple<CanvasElement, BitmapSource> tuple)
-        {
-            var canvasElement = tuple.Item1;
-            if (canvasElement.MonochromeEnabled == true)
-            {
-                canvasElement.Contrast = slider.Value;
-                ApplyImageFilter(imageElement);
-            }
-        }
+        if (sender is Slider slider)
+            _propertyPanelController?.HandlePropertyContrastValueChanged(slider, propertyContrastValue, ApplyImageFilter);
     }
 
     private void PropertyContrast_LostFocus(object sender, RoutedEventArgs e)
     {
-        if (selectedElement is not Image imageElement || sender is not Slider slider)
-            return;
-
-        if (imageElement.Tag is not Tuple<CanvasElement, BitmapSource> tuple)
-            return;
-
-        var canvasElement = tuple.Item1;
-        double newValue = slider.Value;
-        double oldValue = initialPropertyValue;
-
-        if (Math.Abs(newValue - oldValue) > 0.01)
-        {
-            canvasElement.Contrast = oldValue;
-            commandManager.ExecuteCommand(new ChangeImagePropertyCommand(imageElement, "Contrast", oldValue, newValue, ApplyImageFilter));
-            UpdateUndoRedoButtons();
-            isDirty = true;
-        }
+        if (sender is Slider slider)
+            _propertyPanelController?.HandlePropertyContrastLostFocus(slider, ApplyImageFilter);
     }
 
     private void PropertyInvert_Changed(object sender, RoutedEventArgs e)
     {
-        if (selectedElement is not Image imageElement || sender is not CheckBox checkBox)
-            return;
-
-        if (imageElement.Tag is not Tuple<CanvasElement, BitmapSource> tuple)
-            return;
-
-        var canvasElement = tuple.Item1;
-        bool oldValue = canvasElement.InvertColors ?? false;
-        bool newValue = checkBox.IsChecked ?? false;
-
-        if (newValue != oldValue)
-        {
-            commandManager.ExecuteCommand(new ChangeImagePropertyCommand(imageElement, "Invert", oldValue, newValue, ApplyImageFilter));
-            UpdateUndoRedoButtons();
-            isDirty = true;
-        }
+        if (sender is CheckBox checkBox)
+            _propertyPanelController?.HandlePropertyInvertChanged(checkBox, ApplyImageFilter);
     }
 
     // Helper method to apply image filter
@@ -3630,107 +1669,26 @@ public partial class MainWindow : Window
     // Arrow property event handlers
     private void PropertyHasStartArrow_Changed(object sender, RoutedEventArgs e)
     {
-        if (selectedElement is not Canvas arrowCanvas || sender is not CheckBox checkBox)
-            return;
-
-        if (arrowCanvas.Tag is not Tuple<Line, Polygon, Polygon, CanvasElement> arrowData)
-            return;
-
-        var canvasElement = arrowData.Item4;
-        bool newValue = checkBox.IsChecked ?? false;
-        canvasElement.HasStartArrow = newValue;
-
-        // Recreate arrow with updated arrowheads
-        RecreateArrowArrowheads(arrowCanvas);
-        isDirty = true;
+        if (sender is CheckBox checkBox)
+            _propertyPanelController?.HandlePropertyHasStartArrowChanged(checkBox);
     }
 
     private void PropertyHasEndArrow_Changed(object sender, RoutedEventArgs e)
     {
-        if (selectedElement is not Canvas arrowCanvas || sender is not CheckBox checkBox)
-            return;
-
-        if (arrowCanvas.Tag is not Tuple<Line, Polygon, Polygon, CanvasElement> arrowData)
-            return;
-
-        var canvasElement = arrowData.Item4;
-        bool newValue = checkBox.IsChecked ?? false;
-        canvasElement.HasEndArrow = newValue;
-
-        // Recreate arrow with updated arrowheads
-        RecreateArrowArrowheads(arrowCanvas);
-        isDirty = true;
+        if (sender is CheckBox checkBox)
+            _propertyPanelController?.HandlePropertyHasEndArrowChanged(checkBox);
     }
 
     private void PropertyArrowheadSize_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
-    {
-        if (selectedElement is not Canvas arrowCanvas)
-            return;
-
-        if (arrowCanvas.Tag is not Tuple<Line, Polygon, Polygon, CanvasElement> arrowData)
-            return;
-
-        propertyArrowheadSizeValue.Text = e.NewValue.ToString("F0");
-    }
+        => _propertyPanelController?.HandlePropertyArrowheadSizeValueChanged(e.NewValue, propertyArrowheadSizeValue);
 
     private void PropertyArrowheadSize_LostFocus(object sender, RoutedEventArgs e)
     {
-        if (selectedElement is not Canvas arrowCanvas)
-            return;
-
-        if (arrowCanvas.Tag is not Tuple<Line, Polygon, Polygon, CanvasElement> arrowData)
-            return;
-
-        var canvasElement = arrowData.Item4;
-        double newValue = propertyArrowheadSize.Value;
-
-        if (Math.Abs(newValue - initialPropertyValue) > 0.01)
-        {
-            canvasElement.ArrowheadSize = newValue;
-            RecreateArrowArrowheads(arrowCanvas);
-            isDirty = true;
-        }
+        if (sender is Slider slider)
+            _propertyPanelController?.HandlePropertyArrowheadSizeLostFocus(slider);
     }
 
-    public void RecreateArrowArrowheads(Canvas arrowCanvas)
-    {
-        if (arrowCanvas.Tag is not Tuple<Line, Polygon, Polygon, CanvasElement> arrowData)
-            return;
-
-        var line = arrowData.Item1;
-        var oldStartArrowhead = arrowData.Item2;
-        var oldEndArrowhead = arrowData.Item3;
-        var canvasElement = arrowData.Item4;
-
-        // Remove old arrowheads
-        if (oldStartArrowhead != null)
-            arrowCanvas.Children.Remove(oldStartArrowhead);
-        if (oldEndArrowhead != null)
-            arrowCanvas.Children.Remove(oldEndArrowhead);
-
-        // Calculate angle
-        double angle = Math.Atan2(line.Y2, line.X2);
-        double arrowheadSize = canvasElement.ArrowheadSize ?? 10;
-
-        // Create new arrowheads
-        Polygon? newStartArrowhead = null;
-        Polygon? newEndArrowhead = null;
-
-        if (canvasElement.HasStartArrow ?? false)
-        {
-            newStartArrowhead = CreateArrowhead(0, 0, angle + Math.PI, arrowheadSize);
-            arrowCanvas.Children.Insert(0, newStartArrowhead);
-        }
-
-        if (canvasElement.HasEndArrow ?? true)
-        {
-            newEndArrowhead = CreateArrowhead(line.X2, line.Y2, angle, arrowheadSize);
-            arrowCanvas.Children.Insert(0, newEndArrowhead);
-        }
-
-        // Update Tag
-        arrowCanvas.Tag = Tuple.Create(line, newStartArrowhead, newEndArrowhead, canvasElement);
-    }
+    #endregion
 
     // ============================================================================
     // QoL Improvements: Arrange, Align, Z-Order, Grid, Duplicate, Delete
@@ -3748,10 +1706,11 @@ public partial class MainWindow : Window
 
         if (selectedElement is TextBlock textBlock)
         {
-            newElement = CreateTextElement(
+            newElement = ElementFactory.CreateTextElement(
                 textBlock.Text,
                 Canvas.GetLeft(textBlock) + offsetX,
-                Canvas.GetTop(textBlock) + offsetY
+                Canvas.GetTop(textBlock) + offsetY,
+                Element_Select, Element_MouseLeftButtonDown, Element_MouseMove, Element_MouseLeftButtonUp
             );
             if (newElement is TextBlock newText)
             {
@@ -3767,11 +1726,12 @@ public partial class MainWindow : Window
         }
         else if (selectedElement is Rectangle rect)
         {
-            newElement = CreateRectangleElement(
+            newElement = ElementFactory.CreateRectangleElement(
                 Canvas.GetLeft(rect) + offsetX,
                 Canvas.GetTop(rect) + offsetY,
                 rect.Width,
-                rect.Height
+                rect.Height,
+                Element_Select, Element_MouseLeftButtonDown, Element_MouseMove, Element_MouseLeftButtonUp
             );
             if (newElement is Rectangle newRect)
             {
@@ -3787,11 +1747,12 @@ public partial class MainWindow : Window
         }
         else if (selectedElement is Ellipse ellipse)
         {
-            newElement = CreateEllipseElement(
+            newElement = ElementFactory.CreateEllipseElement(
                 Canvas.GetLeft(ellipse) + offsetX,
                 Canvas.GetTop(ellipse) + offsetY,
                 ellipse.Width,
-                ellipse.Height
+                ellipse.Height,
+                Element_Select, Element_MouseLeftButtonDown, Element_MouseMove, Element_MouseLeftButtonUp
             );
             if (newElement is Ellipse newEllipse)
             {
@@ -3812,10 +1773,11 @@ public partial class MainWindow : Window
                 pointsCopy.Add(new Point(point.X, point.Y));
             }
 
-            newElement = CreatePolygonElement(
+            newElement = ElementFactory.CreatePolygonElement(
                 pointsCopy,
                 Canvas.GetLeft(polygon) + offsetX,
-                Canvas.GetTop(polygon) + offsetY
+                Canvas.GetTop(polygon) + offsetY,
+                Element_Select, Element_MouseLeftButtonDown, Element_MouseMove, Element_MouseLeftButtonUp
             );
             if (newElement is Polygon newPolygon)
             {
@@ -3829,10 +1791,13 @@ public partial class MainWindow : Window
             if (image.Tag is Tuple<CanvasElement, BitmapSource> tuple)
             {
                 var canvasElement = tuple.Item1;
-                newElement = CreateImageElement(
+                newElement = ElementFactory.CreateImageElement(
                     canvasElement.ImagePath ?? "",
                     Canvas.GetLeft(image) + offsetX,
-                    Canvas.GetTop(image) + offsetY
+                    Canvas.GetTop(image) + offsetY,
+                    designCanvas.ActualWidth,
+                    designCanvas.ActualHeight,
+                    Element_Select, Element_MouseLeftButtonDown, Element_MouseMove, Element_MouseLeftButtonUp
                 );
                 if (newElement is Image newImage)
                 {
@@ -3877,11 +1842,12 @@ public partial class MainWindow : Window
             double y2 = canvasTop + line.Y2;
 
             // Create new line with offset
-            newElement = CreateLineElement(
+            newElement = ElementFactory.CreateLineElement(
                 x1 + offsetX,
                 y1 + offsetY,
                 x2 + offsetX,
-                y2 + offsetY
+                y2 + offsetY,
+                Element_Select, Element_MouseLeftButtonDown, Element_MouseMove, Element_MouseLeftButtonUp
             );
 
             // Copy stroke properties
@@ -3893,9 +1859,9 @@ public partial class MainWindow : Window
                 newLine.StrokeThickness = line.StrokeThickness;
             }
         }
-        else if (selectedElement is Canvas arrowCanvas && arrowCanvas.Tag is Tuple<Line, Polygon, Polygon, CanvasElement>)
+        else if (selectedElement is Canvas arrowCanvas && arrowCanvas.Tag is Tuple<Line, Polygon?, Polygon?, CanvasElement>)
         {
-            var arrowData = (Tuple<Line, Polygon, Polygon, CanvasElement>)arrowCanvas.Tag;
+            var arrowData = (Tuple<Line, Polygon?, Polygon?, CanvasElement>)arrowCanvas.Tag;
             var canvasElement = arrowData.Item4;
 
             double canvasLeft = Canvas.GetLeft(arrowCanvas);
@@ -3903,16 +1869,17 @@ public partial class MainWindow : Window
             if (double.IsNaN(canvasLeft)) canvasLeft = 0;
             if (double.IsNaN(canvasTop)) canvasTop = 0;
 
-            newElement = CreateArrowElement(
+            newElement = ElementFactory.CreateArrowElement(
                 canvasLeft + offsetX,
                 canvasTop + offsetY,
                 (canvasElement.X2 ?? 0) + offsetX,
                 (canvasElement.Y2 ?? 0) + offsetY,
                 canvasElement.HasStartArrow ?? false,
                 canvasElement.HasEndArrow ?? true,
-                canvasElement.ArrowheadSize ?? 10
+                canvasElement.ArrowheadSize ?? 10,
+                Element_Select, Element_MouseLeftButtonDown, Element_MouseMove, Element_MouseLeftButtonUp
             );
-            if (newElement is Canvas newArrowCanvas && newArrowCanvas.Tag is Tuple<Line, Polygon, Polygon, CanvasElement> newArrowData)
+            if (newElement is Canvas newArrowCanvas && newArrowCanvas.Tag is Tuple<Line, Polygon?, Polygon?, CanvasElement> newArrowData)
             {
                 var newLine = newArrowData.Item1;
                 var origLine = arrowData.Item1;
