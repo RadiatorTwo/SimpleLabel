@@ -19,6 +19,16 @@ public class CommandManager
     }
 
     /// <summary>
+    /// Add a command to the undo stack WITHOUT executing it.
+    /// Use when the action has already been performed (e.g., during drag operations).
+    /// </summary>
+    public void AddExecutedCommand(ICommand command)
+    {
+        _undoStack.Push(command);
+        _redoStack.Clear();
+    }
+
+    /// <summary>
     /// Undo the last command
     /// </summary>
     public void Undo()

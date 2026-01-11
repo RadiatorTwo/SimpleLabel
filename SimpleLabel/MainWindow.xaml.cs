@@ -1,4 +1,5 @@
-﻿using System.IO;
+﻿using System.Collections.ObjectModel;
+using System.IO;
 using System.Printing;
 using System.Text;
 using System.Text.Json;
@@ -33,6 +34,19 @@ public partial class MainWindow : Window
     private Point dragInitialPosition; // For undo/redo - initial position before drag
     private Point dragInitialEndPosition; // For Line elements - stores X2/Y2
     private UIElement? selectedElement = null;
+
+    // Multi-selection support
+    private readonly HashSet<UIElement> _selectedElements = new();
+
+    // Marquee selection support
+    private bool _isMarqueeSelecting = false;
+    private Point _marqueeStartPoint;
+    private Rectangle? _marqueeRectangle;
+
+    // Multi-element drag support
+    private Dictionary<UIElement, Point> _dragInitialPositions = new();
+    private Dictionary<UIElement, Point> _dragInitialEndPositions = new(); // For Lines (X2/Y2)
+
     private string? currentFilePath = null;
     internal bool isDirty = false;
     private readonly Commands.CommandManager commandManager = new();
@@ -42,7 +56,13 @@ public partial class MainWindow : Window
 
     // Grid/Snap settings
     private bool snapToGrid = true;
+    private bool snapToElements = true;
     private double gridSize = 5; // Default 5 mm
+
+    // Snap-to-element guidelines
+    private Line? _verticalSnapGuideline;
+    private Line? _horizontalSnapGuideline;
+    private const double SNAP_THRESHOLD_PIXELS = 8;
 
     // Unit conversion constants (96 DPI)
     private const double MM_TO_PIXELS = 96.0 / 25.4;
@@ -50,6 +70,12 @@ public partial class MainWindow : Window
 
     // Element control registry for IElementControl lookup
     private readonly Dictionary<UIElement, IElementControl> _elementControls = new();
+
+    // Layers collection for Z-order management
+    public ObservableCollection<LayerItem> Layers { get; } = new();
+
+    // Guard variable to prevent selection sync loops
+    private bool _syncingSelection = false;
 
     public MainWindow()
     {
@@ -84,6 +110,28 @@ public partial class MainWindow : Window
         // Initialize grid background and menu checks
         UpdateGridBackground();
         UpdateGridSizeMenuChecks();
+
+        // Initialize Layers panel
+        layersPanel.ItemsSource = Layers;
+        layersPanel.ReorderRequested += LayersPanel_ReorderRequested;
+        layersPanel.SelectionChanged += LayersPanel_SelectionChanged;
+
+        // Initialize marquee rectangle for selection
+        _marqueeRectangle = new Rectangle
+        {
+            Stroke = new SolidColorBrush(Color.FromRgb(0, 120, 215)), // #0078D7
+            StrokeThickness = 1,
+            StrokeDashArray = new DoubleCollection { 4, 2 },
+            Fill = new SolidColorBrush(Color.FromArgb(40, 0, 120, 215)), // Semi-transparent
+            Visibility = Visibility.Collapsed,
+            IsHitTestVisible = false
+        };
+
+        // Initialize snap-to-element guidelines
+        InitializeSnapGuidelines();
+
+        // Set snap to elements menu item checked
+        menuSnapToElements.IsChecked = snapToElements;
     }
 
     #region Element Control Registry
@@ -119,41 +167,328 @@ public partial class MainWindow : Window
 
     #endregion
 
-    private void SelectElement(UIElement? element)
+    #region Layers Panel Integration
+
+    /// <summary>
+    /// Handles selection changes from the Layers panel.
+    /// </summary>
+    private void LayersPanel_SelectionChanged(object? sender, LayerItem? layerItem)
     {
-        // Deselect previous element
-        if (selectedElement != null)
+        if (_syncingSelection)
+            return;
+
+        _syncingSelection = true;
+        try
         {
-            var oldLayer = AdornerLayer.GetAdornerLayer(selectedElement);
-            if (oldLayer != null)
+            // Get all selected items from layers panel
+            var selectedItems = layersPanel.SelectedLayerItems;
+
+            // Clear existing selection
+            foreach (var element in _selectedElements.ToList())
             {
-                var adorners = oldLayer.GetAdorners(selectedElement);
-                if (adorners != null)
+                RemoveAdornerFromElement(element);
+            }
+            _selectedElements.Clear();
+
+            // Add all selected layers to selection
+            foreach (var item in selectedItems)
+            {
+                if (item is LayerItem layer && layer.Element != null)
                 {
-                    foreach (var adorner in adorners)
-                        oldLayer.Remove(adorner);
+                    _selectedElements.Add(layer.Element);
+                    AddAdornerToElement(layer.Element);
                 }
             }
+
+            // Update primary selection (last selected or first in collection)
+            if (layerItem?.Element != null && _selectedElements.Contains(layerItem.Element))
+            {
+                selectedElement = layerItem.Element;
+            }
+            else if (_selectedElements.Count > 0)
+            {
+                selectedElement = _selectedElements.Last();
+            }
+            else
+            {
+                selectedElement = null;
+            }
+
+            // Sync with property panel controller
+            if (_propertyPanelController != null)
+            {
+                _propertyPanelController.SelectedElement = selectedElement;
+            }
+
+            UpdatePropertiesPanel();
+        }
+        finally
+        {
+            _syncingSelection = false;
+        }
+    }
+
+    /// <summary>
+    /// Handles reorder requests from the Layers panel.
+    /// </summary>
+    private void LayersPanel_ReorderRequested(object? sender, ReorderEventArgs e)
+    {
+        if (e.OldIndex < 0 || e.NewIndex < 0 || e.OldIndex >= Layers.Count || e.NewIndex >= Layers.Count)
+            return;
+
+        // Move in Layers collection
+        Layers.Move(e.OldIndex, e.NewIndex);
+
+        // Sync Canvas from Layers
+        SyncCanvasFromLayers();
+
+        isDirty = true;
+    }
+
+    /// <summary>
+    /// Synchronizes the Canvas.Children order to match the Layers collection.
+    /// Layers[0] = top (visually) = last in Canvas.Children.
+    /// </summary>
+    private void SyncCanvasFromLayers()
+    {
+        if (Layers.Count == 0)
+            return;
+
+        // Remove all elements temporarily
+        var elements = Layers.Select(l => l.Element).Where(e => e != null).ToList();
+
+        designCanvas.Children.Clear();
+
+        // Re-add in reverse order (Layers[0] is top, should be last in Children)
+        for (int i = Layers.Count - 1; i >= 0; i--)
+        {
+            if (Layers[i].Element != null)
+            {
+                designCanvas.Children.Add(Layers[i].Element!);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Rebuilds the Layers collection from the current Canvas.Children.
+    /// Canvas.Children last = top (visually) = Layers[0].
+    /// </summary>
+    public void SyncLayersFromCanvas()
+    {
+        Layers.Clear();
+
+        // Iterate from end to start (top to bottom visually)
+        for (int i = designCanvas.Children.Count - 1; i >= 0; i--)
+        {
+            var element = designCanvas.Children[i];
+            var elementType = GetElementTypeForLayer(element);
+            var displayName = LayerItem.GetDisplayName(element, elementType);
+
+            Layers.Add(new LayerItem
+            {
+                Element = element,
+                ElementType = elementType,
+                DisplayName = displayName
+            });
+        }
+    }
+
+    /// <summary>
+    /// Adds a layer for a newly created element (inserts at top = index 0).
+    /// </summary>
+    private void AddLayerForElement(UIElement element, ElementType elementType)
+    {
+        var displayName = LayerItem.GetDisplayName(element, elementType);
+        Layers.Insert(0, new LayerItem
+        {
+            Element = element,
+            ElementType = elementType,
+            DisplayName = displayName
+        });
+    }
+
+    /// <summary>
+    /// Removes the layer for a deleted element.
+    /// </summary>
+    private void RemoveLayerForElement(UIElement element)
+    {
+        var layerItem = Layers.FirstOrDefault(l => l.Element == element);
+        if (layerItem != null)
+        {
+            Layers.Remove(layerItem);
+        }
+    }
+
+    /// <summary>
+    /// Determines the ElementType for a given UIElement for layer display.
+    /// </summary>
+    private ElementType GetElementTypeForLayer(UIElement element)
+    {
+        // First check if we have an IElementControl registered
+        if (_elementControls.TryGetValue(element, out var control))
+        {
+            return control.ElementType;
         }
 
-        // Select new element
-        selectedElement = element;
+        // Fallback based on element type
+        return element switch
+        {
+            TextBlock => ElementType.Text,
+            Rectangle => ElementType.Rectangle,
+            Ellipse => ElementType.Ellipse,
+            Polygon => ElementType.Polygon,
+            Image => ElementType.Image,
+            Canvas c when c.Tag is Tuple<Line, CanvasElement> => ElementType.Line,
+            Canvas c when c.Tag is Tuple<Line, Polygon?, Polygon?, CanvasElement> => ElementType.Arrow,
+            _ => ElementType.Rectangle
+        };
+    }
+
+    #endregion
+
+    private void SelectElement(UIElement? element, bool addToSelection = false)
+    {
+        if (element == null)
+        {
+            // Clear all selection
+            ClearSelection();
+            return;
+        }
+
+        if (addToSelection)
+        {
+            // Toggle selection - add if not present, remove if present
+            if (_selectedElements.Contains(element))
+            {
+                // Remove from selection
+                RemoveAdornerFromElement(element);
+                _selectedElements.Remove(element);
+
+                // Update primary selection to last remaining element or null
+                if (_selectedElements.Count > 0)
+                {
+                    selectedElement = _selectedElements.Last();
+                }
+                else
+                {
+                    selectedElement = null;
+                }
+            }
+            else
+            {
+                // Add to selection
+                _selectedElements.Add(element);
+                AddAdornerToElement(element);
+                selectedElement = element; // Last added becomes primary
+            }
+        }
+        else
+        {
+            // Single selection - clear others first
+            ClearSelection();
+            _selectedElements.Add(element);
+            AddAdornerToElement(element);
+            selectedElement = element;
+        }
 
         // Sync with property panel controller
         if (_propertyPanelController != null)
         {
-            _propertyPanelController.SelectedElement = element;
+            _propertyPanelController.SelectedElement = selectedElement;
         }
 
-        if (selectedElement != null)
-        {
-            var layer = AdornerLayer.GetAdornerLayer(selectedElement);
-            if (layer != null)
-                layer.Add(new ResizeAdorner(selectedElement));
-        }
+        // Sync with Layers panel (Canvas → Layers direction)
+        SyncLayersPanelSelection();
 
         // Update properties panel
         UpdatePropertiesPanel();
+    }
+
+    /// <summary>
+    /// Clears all selected elements and removes their adorners.
+    /// </summary>
+    private void ClearSelection()
+    {
+        // Remove adorners from all selected elements
+        foreach (var element in _selectedElements)
+        {
+            RemoveAdornerFromElement(element);
+        }
+        _selectedElements.Clear();
+        selectedElement = null;
+
+        // Sync with property panel controller
+        if (_propertyPanelController != null)
+        {
+            _propertyPanelController.SelectedElement = null;
+        }
+
+        // Sync with Layers panel
+        SyncLayersPanelSelection();
+
+        // Update properties panel
+        UpdatePropertiesPanel();
+    }
+
+    /// <summary>
+    /// Adds a ResizeAdorner to the specified element.
+    /// </summary>
+    private void AddAdornerToElement(UIElement element)
+    {
+        var layer = AdornerLayer.GetAdornerLayer(element);
+        if (layer != null)
+        {
+            layer.Add(new ResizeAdorner(element));
+        }
+    }
+
+    /// <summary>
+    /// Removes all adorners from the specified element.
+    /// </summary>
+    private void RemoveAdornerFromElement(UIElement element)
+    {
+        var layer = AdornerLayer.GetAdornerLayer(element);
+        if (layer != null)
+        {
+            var adorners = layer.GetAdorners(element);
+            if (adorners != null)
+            {
+                foreach (var adorner in adorners)
+                {
+                    layer.Remove(adorner);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Synchronizes the Layers panel selection with the internal selection state.
+    /// </summary>
+    private void SyncLayersPanelSelection()
+    {
+        if (_syncingSelection)
+            return;
+
+        _syncingSelection = true;
+        try
+        {
+            // Clear current layers panel selection
+            layersPanel.SelectedLayerItems.Clear();
+
+            // Add all selected elements to layers panel selection
+            foreach (var element in _selectedElements)
+            {
+                var layerItem = Layers.FirstOrDefault(l => l.Element == element);
+                if (layerItem != null)
+                {
+                    layersPanel.SelectedLayerItems.Add(layerItem);
+                }
+            }
+        }
+        finally
+        {
+            _syncingSelection = false;
+        }
     }
 
     internal void UpdatePropertiesPanel()
@@ -234,18 +569,163 @@ public partial class MainWindow : Window
         var element = sender as UIElement;
         if (element != null)
         {
-            SelectElement(element);
+            // Check if Shift is held for multi-selection
+            bool addToSelection = Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift);
+
+            // If clicking on an already-selected element in a multi-selection (without Shift),
+            // keep the selection intact for group dragging
+            if (!addToSelection && _selectedElements.Contains(element) && _selectedElements.Count > 1)
+            {
+                // Just update primary selection for properties panel, don't change the selection
+                selectedElement = element;
+                if (_propertyPanelController != null)
+                {
+                    _propertyPanelController.SelectedElement = element;
+                }
+                UpdatePropertiesPanel();
+                return;
+            }
+
+            SelectElement(element, addToSelection);
             // Don't set e.Handled = true to allow drag handlers to also work
         }
     }
 
     private void Canvas_MouseDown(object sender, MouseButtonEventArgs e)
     {
-        // Only deselect if clicking directly on canvas (not on child element)
+        // Only start marquee selection if clicking directly on canvas (not on child element)
         if (e.Source == designCanvas)
         {
-            SelectElement(null);
+            _marqueeStartPoint = e.GetPosition(designCanvas);
+            _isMarqueeSelecting = true;
+
+            // Initialize marquee rectangle position and size
+            if (_marqueeRectangle != null)
+            {
+                Canvas.SetLeft(_marqueeRectangle, _marqueeStartPoint.X);
+                Canvas.SetTop(_marqueeRectangle, _marqueeStartPoint.Y);
+                _marqueeRectangle.Width = 0;
+                _marqueeRectangle.Height = 0;
+                _marqueeRectangle.Visibility = Visibility.Visible;
+
+                if (!designCanvas.Children.Contains(_marqueeRectangle))
+                {
+                    designCanvas.Children.Add(_marqueeRectangle);
+                }
+            }
+
+            designCanvas.CaptureMouse();
+            e.Handled = true;
         }
+    }
+
+    private void Canvas_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (!_isMarqueeSelecting || _marqueeRectangle == null)
+            return;
+
+        Point currentPos = e.GetPosition(designCanvas);
+
+        // Calculate rectangle bounds (handle dragging in any direction)
+        double x = Math.Min(_marqueeStartPoint.X, currentPos.X);
+        double y = Math.Min(_marqueeStartPoint.Y, currentPos.Y);
+        double width = Math.Abs(currentPos.X - _marqueeStartPoint.X);
+        double height = Math.Abs(currentPos.Y - _marqueeStartPoint.Y);
+
+        Canvas.SetLeft(_marqueeRectangle, x);
+        Canvas.SetTop(_marqueeRectangle, y);
+        _marqueeRectangle.Width = width;
+        _marqueeRectangle.Height = height;
+    }
+
+    private void Canvas_MouseUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!_isMarqueeSelecting || _marqueeRectangle == null)
+            return;
+
+        _isMarqueeSelecting = false;
+        designCanvas.ReleaseMouseCapture();
+
+        // Hide and remove marquee rectangle
+        _marqueeRectangle.Visibility = Visibility.Collapsed;
+        designCanvas.Children.Remove(_marqueeRectangle);
+
+        // Select elements within the marquee bounds
+        SelectElementsInMarquee();
+    }
+
+    /// <summary>
+    /// Selects all elements that intersect with the marquee rectangle bounds.
+    /// </summary>
+    private void SelectElementsInMarquee()
+    {
+        if (_marqueeRectangle == null)
+            return;
+
+        // Get marquee bounds
+        double marqueeLeft = Canvas.GetLeft(_marqueeRectangle);
+        double marqueeTop = Canvas.GetTop(_marqueeRectangle);
+        if (double.IsNaN(marqueeLeft)) marqueeLeft = 0;
+        if (double.IsNaN(marqueeTop)) marqueeTop = 0;
+
+        Rect marqueeBounds = new Rect(marqueeLeft, marqueeTop,
+                                      _marqueeRectangle.Width, _marqueeRectangle.Height);
+
+        // Small marquee (click without drag) - clear selection
+        if (marqueeBounds.Width < 5 && marqueeBounds.Height < 5)
+        {
+            ClearSelection();
+            return;
+        }
+
+        // Check if Shift is held for adding to existing selection
+        bool addToSelection = Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift);
+
+        if (!addToSelection)
+        {
+            ClearSelection();
+        }
+
+        // Find all elements intersecting with marquee
+        foreach (UIElement child in designCanvas.Children)
+        {
+            // Skip the marquee rectangle itself
+            if (child == _marqueeRectangle)
+                continue;
+
+            // Get element bounds
+            Rect elementBounds = GetElementBounds(child);
+
+            // Check intersection
+            if (marqueeBounds.IntersectsWith(elementBounds))
+            {
+                SelectElement(child, true); // Always addToSelection=true here
+            }
+        }
+    }
+
+    /// <summary>
+    /// Gets the bounding rectangle for a UI element on the canvas.
+    /// </summary>
+    private Rect GetElementBounds(UIElement element)
+    {
+        if (element is Line line)
+        {
+            double minX = Math.Min(line.X1, line.X2);
+            double minY = Math.Min(line.Y1, line.Y2);
+            double maxX = Math.Max(line.X1, line.X2);
+            double maxY = Math.Max(line.Y1, line.Y2);
+            return new Rect(minX, minY, Math.Max(1, maxX - minX), Math.Max(1, maxY - minY));
+        }
+        else if (element is FrameworkElement fe)
+        {
+            double left = Canvas.GetLeft(fe);
+            double top = Canvas.GetTop(fe);
+            if (double.IsNaN(left)) left = 0;
+            if (double.IsNaN(top)) top = 0;
+            return new Rect(left, top, Math.Max(1, fe.ActualWidth), Math.Max(1, fe.ActualHeight));
+        }
+        return Rect.Empty;
     }
 
     private void ClearCanvas_Click(object sender, RoutedEventArgs e)
@@ -254,6 +734,8 @@ public partial class MainWindow : Window
         // Clear all element controls before clearing canvas
         _elementControls.Clear();
         designCanvas.Children.Clear();
+        // Clear Layers panel
+        Layers.Clear();
         commandManager.Clear();
         UpdateUndoRedoButtons();
     }
@@ -298,6 +780,9 @@ public partial class MainWindow : Window
         var control = new TextElementControl(textBlock, canvasElement, this);
         RegisterElementControl(textBlock, control);
 
+        // Add to Layers panel
+        AddLayerForElement(textBlock, ElementType.Text);
+
         UpdateUndoRedoButtons();
         isDirty = true;
     }
@@ -313,6 +798,9 @@ public partial class MainWindow : Window
         var control = new ShapeControl(rectangle, canvasElement, ElementType.Rectangle, this);
         RegisterElementControl(rectangle, control);
 
+        // Add to Layers panel
+        AddLayerForElement(rectangle, ElementType.Rectangle);
+
         UpdateUndoRedoButtons();
         isDirty = true;
     }
@@ -327,6 +815,9 @@ public partial class MainWindow : Window
         var canvasElement = new CanvasElement { ElementType = "Ellipse", X = 150, Y = 150, Width = 80, Height = 80 };
         var control = new ShapeControl(ellipse, canvasElement, ElementType.Ellipse, this);
         RegisterElementControl(ellipse, control);
+
+        // Add to Layers panel
+        AddLayerForElement(ellipse, ElementType.Ellipse);
 
         UpdateUndoRedoButtons();
         isDirty = true;
@@ -346,6 +837,9 @@ public partial class MainWindow : Window
             RegisterElementControl(lineCanvas, control);
         }
 
+        // Add to Layers panel
+        AddLayerForElement(lineCanvas, ElementType.Line);
+
         UpdateUndoRedoButtons();
         isDirty = true;
     }
@@ -364,6 +858,9 @@ public partial class MainWindow : Window
             RegisterElementControl(arrowCanvas, control);
         }
 
+        // Add to Layers panel
+        AddLayerForElement(arrowCanvas, ElementType.Arrow);
+
         UpdateUndoRedoButtons();
         isDirty = true;
     }
@@ -380,6 +877,9 @@ public partial class MainWindow : Window
         var control = new ShapeControl(triangle, canvasElement, ElementType.Triangle, this);
         RegisterElementControl(triangle, control);
 
+        // Add to Layers panel
+        AddLayerForElement(triangle, ElementType.Triangle);
+
         UpdateUndoRedoButtons();
         isDirty = true;
     }
@@ -395,6 +895,9 @@ public partial class MainWindow : Window
         var canvasElement = new CanvasElement { ElementType = "Polygon", X = 150, Y = 150, Width = 80, Height = 80 };
         var control = new ShapeControl(star, canvasElement, ElementType.Star, this);
         RegisterElementControl(star, control);
+
+        // Add to Layers panel
+        AddLayerForElement(star, ElementType.Star);
 
         UpdateUndoRedoButtons();
         isDirty = true;
@@ -424,6 +927,9 @@ public partial class MainWindow : Window
                     RegisterElementControl(image, control);
                 }
 
+                // Add to Layers panel
+                AddLayerForElement(image, ElementType.Image);
+
                 UpdateUndoRedoButtons();
                 isDirty = true;
             }
@@ -438,23 +944,39 @@ public partial class MainWindow : Window
     {
         draggedElement = sender as UIElement;
         dragStartPoint = e.GetPosition(designCanvas);
+        _dragInitialPositions.Clear();
+        _dragInitialEndPositions.Clear();
 
-        // Store initial position for undo/redo
         if (draggedElement != null)
         {
-            if (draggedElement is Line line)
+            // Check if dragged element is part of multi-selection
+            if (_selectedElements.Contains(draggedElement) && _selectedElements.Count > 1)
             {
-                // For Line, store X1/Y1 and X2/Y2
-                dragInitialPosition = new Point(line.X1, line.Y1);
-                dragInitialEndPosition = new Point(line.X2, line.Y2);
+                // Store positions of ALL selected elements
+                foreach (var element in _selectedElements)
+                {
+                    StoreElementPosition(element);
+                }
             }
             else
             {
-                double left = Canvas.GetLeft(draggedElement);
-                double top = Canvas.GetTop(draggedElement);
-                if (double.IsNaN(left)) left = 0.0;
-                if (double.IsNaN(top)) top = 0.0;
-                dragInitialPosition = new Point(left, top);
+                // Single element drag - store only this element's position
+                StoreElementPosition(draggedElement);
+
+                // Also keep legacy dragInitialPosition for compatibility
+                if (draggedElement is Line line)
+                {
+                    dragInitialPosition = new Point(line.X1, line.Y1);
+                    dragInitialEndPosition = new Point(line.X2, line.Y2);
+                }
+                else
+                {
+                    double left = Canvas.GetLeft(draggedElement);
+                    double top = Canvas.GetTop(draggedElement);
+                    if (double.IsNaN(left)) left = 0.0;
+                    if (double.IsNaN(top)) top = 0.0;
+                    dragInitialPosition = new Point(left, top);
+                }
             }
         }
 
@@ -463,13 +985,49 @@ public partial class MainWindow : Window
         e.Handled = true;
     }
 
+    /// <summary>
+    /// Stores the initial position of an element for drag operations.
+    /// </summary>
+    private void StoreElementPosition(UIElement element)
+    {
+        if (element is Line line)
+        {
+            _dragInitialPositions[element] = new Point(line.X1, line.Y1);
+            _dragInitialEndPositions[element] = new Point(line.X2, line.Y2);
+        }
+        else
+        {
+            double left = Canvas.GetLeft(element);
+            double top = Canvas.GetTop(element);
+            if (double.IsNaN(left)) left = 0.0;
+            if (double.IsNaN(top)) top = 0.0;
+            _dragInitialPositions[element] = new Point(left, top);
+        }
+    }
+
     private void Element_MouseMove(object sender, MouseEventArgs e)
     {
-        if (!isDragging)
+        if (!isDragging || draggedElement == null)
+            return;
+
+        // Only process events from the element that has mouse capture
+        if (sender != draggedElement)
             return;
 
         Point currentPos = e.GetPosition(designCanvas);
         Vector offset = currentPos - dragStartPoint;
+
+        // Check if we're moving multiple elements
+        if (_dragInitialPositions.Count > 1)
+        {
+            // Multi-element drag - use absolute positioning from initial positions
+            MoveMultipleElementsAbsolute(offset);
+            UpdatePropertiesPanel();
+            e.Handled = true;
+            return;
+        }
+
+        // Single element drag - existing logic below
 
         // Special handling for Line elements
         if (draggedElement is Line line)
@@ -571,6 +1129,20 @@ public partial class MainWindow : Window
             newTop = topMm * MM_TO_PIXELS;
         }
 
+        // Snap to elements (after grid snap, element snap takes precedence)
+        HideSnapGuidelines();
+        if (snapToElements && _selectedElements.Count <= 1)
+        {
+            var (snappedLeft, snappedTop, guideX, guideY) = CalculateElementSnap(
+                newLeft, newTop, elementWidth, elementHeight, draggedElement);
+
+            newLeft = snappedLeft;
+            newTop = snappedTop;
+
+            if (guideX.HasValue) ShowVerticalSnapGuideline(guideX.Value);
+            if (guideY.HasValue) ShowHorizontalSnapGuideline(guideY.Value);
+        }
+
         Canvas.SetLeft(draggedElement, newLeft);
         Canvas.SetTop(draggedElement, newTop);
 
@@ -580,14 +1152,147 @@ public partial class MainWindow : Window
         e.Handled = true;
     }
 
+    /// <summary>
+    /// Moves all elements in _dragInitialPositions by the given offset from their initial positions.
+    /// Uses absolute positioning: newPos = initialPos + offset
+    /// Applies snap-to-grid if enabled.
+    /// </summary>
+    private void MoveMultipleElementsAbsolute(Vector offset)
+    {
+        // Apply snap to grid to the offset if enabled
+        Vector snappedOffset = offset;
+        if (snapToGrid)
+        {
+            // Snap the offset to grid units
+            double offsetXMm = offset.X * PIXELS_TO_MM;
+            double offsetYMm = offset.Y * PIXELS_TO_MM;
+            offsetXMm = Math.Round(offsetXMm / gridSize) * gridSize;
+            offsetYMm = Math.Round(offsetYMm / gridSize) * gridSize;
+            snappedOffset = new Vector(offsetXMm * MM_TO_PIXELS, offsetYMm * MM_TO_PIXELS);
+        }
+
+        // Calculate selection bounding box for snap-to-elements
+        HideSnapGuidelines();
+        if (snapToElements && _selectedElements.Count > 1)
+        {
+            double minX = double.MaxValue, minY = double.MaxValue;
+            double maxX = double.MinValue, maxY = double.MinValue;
+
+            foreach (var kvp in _dragInitialPositions)
+            {
+                UIElement elem = kvp.Key;
+                Point initialPos = kvp.Value;
+
+                // Calculate where this element will be after applying offset
+                double elemLeft = initialPos.X + snappedOffset.X;
+                double elemTop = initialPos.Y + snappedOffset.Y;
+
+                if (elem is Line line)
+                {
+                    Point initialEnd = _dragInitialEndPositions.GetValueOrDefault(elem, new Point(0, 0));
+                    double elemRight = initialEnd.X + snappedOffset.X;
+                    double elemBottom = initialEnd.Y + snappedOffset.Y;
+
+                    minX = Math.Min(minX, Math.Min(elemLeft, elemRight));
+                    minY = Math.Min(minY, Math.Min(elemTop, elemBottom));
+                    maxX = Math.Max(maxX, Math.Max(elemLeft, elemRight));
+                    maxY = Math.Max(maxY, Math.Max(elemTop, elemBottom));
+                }
+                else
+                {
+                    var bounds = GetElementBounds(elem);
+                    if (bounds != Rect.Empty)
+                    {
+                        minX = Math.Min(minX, elemLeft);
+                        minY = Math.Min(minY, elemTop);
+                        maxX = Math.Max(maxX, elemLeft + bounds.Width);
+                        maxY = Math.Max(maxY, elemTop + bounds.Height);
+                    }
+                }
+            }
+
+            if (minX < double.MaxValue)
+            {
+                double selWidth = maxX - minX;
+                double selHeight = maxY - minY;
+
+                var (snappedLeft, snappedTop, guideX, guideY) = CalculateElementSnapForSelection(
+                    minX, minY, selWidth, selHeight);
+
+                // Calculate snap delta and apply to offset
+                double snapDeltaX = snappedLeft - minX;
+                double snapDeltaY = snappedTop - minY;
+                snappedOffset = new Vector(snappedOffset.X + snapDeltaX, snappedOffset.Y + snapDeltaY);
+
+                if (guideX.HasValue) ShowVerticalSnapGuideline(guideX.Value);
+                if (guideY.HasValue) ShowHorizontalSnapGuideline(guideY.Value);
+            }
+        }
+
+        foreach (var kvp in _dragInitialPositions)
+        {
+            UIElement element = kvp.Key;
+            Point initialPos = kvp.Value;
+
+            if (element is Line line)
+            {
+                Point initialEnd = _dragInitialEndPositions.GetValueOrDefault(element, new Point(0, 0));
+
+                line.X1 = initialPos.X + snappedOffset.X;
+                line.Y1 = initialPos.Y + snappedOffset.Y;
+                line.X2 = initialEnd.X + snappedOffset.X;
+                line.Y2 = initialEnd.Y + snappedOffset.Y;
+
+                // Update adorner
+                UpdateElementAdorner(line);
+            }
+            else
+            {
+                double newLeft = initialPos.X + snappedOffset.X;
+                double newTop = initialPos.Y + snappedOffset.Y;
+                Canvas.SetLeft(element, newLeft);
+                Canvas.SetTop(element, newTop);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Updates the adorner for a specific element (invalidates layout).
+    /// </summary>
+    private void UpdateElementAdorner(UIElement element)
+    {
+        if (_selectedElements.Contains(element))
+        {
+            var layer = AdornerLayer.GetAdornerLayer(element);
+            if (layer != null)
+            {
+                var adorners = layer.GetAdorners(element);
+                if (adorners != null)
+                {
+                    foreach (var adorner in adorners)
+                    {
+                        adorner.InvalidateArrange();
+                        adorner.InvalidateVisual();
+                    }
+                }
+            }
+        }
+    }
+
     private void Element_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
         if (!isDragging)
             return;
 
-        // Create MoveElementCommand if position changed
-        if (draggedElement != null)
+        // Check if we moved multiple elements
+        if (_dragInitialPositions.Count > 1)
         {
+            // Create commands for all moved elements
+            CreateMoveCommandsForMultipleElements();
+        }
+        else if (draggedElement != null)
+        {
+            // Single element - existing logic
             double finalLeft = Canvas.GetLeft(draggedElement);
             double finalTop = Canvas.GetTop(draggedElement);
             if (double.IsNaN(finalLeft)) finalLeft = 0.0;
@@ -624,10 +1329,74 @@ public partial class MainWindow : Window
             }
         }
 
-        draggedElement?.ReleaseMouseCapture();
+        // IMPORTANT: Set isDragging = false BEFORE clearing positions and releasing capture
+        // to prevent stray MouseMove events from taking the SINGLE element path
         isDragging = false;
+        _dragInitialPositions.Clear();
+        _dragInitialEndPositions.Clear();
+        draggedElement?.ReleaseMouseCapture();
         draggedElement = null;
+
+        // Hide snap guidelines after drag ends
+        HideSnapGuidelines();
+
         e.Handled = true;
+    }
+
+    /// <summary>
+    /// Creates move commands for all elements that were dragged in a multi-selection.
+    /// Elements are already at their final positions - we just record commands for undo/redo.
+    /// </summary>
+    private void CreateMoveCommandsForMultipleElements()
+    {
+        bool anyMoved = false;
+
+        foreach (var kvp in _dragInitialPositions)
+        {
+            UIElement element = kvp.Key;
+            Point initialPos = kvp.Value;
+
+            if (element is Line line)
+            {
+                // Line element - get current (final) position
+                Point finalPos = new Point(line.X1, line.Y1);
+                Point initialEnd = _dragInitialEndPositions.GetValueOrDefault(element, new Point(0, 0));
+                Point finalEnd = new Point(line.X2, line.Y2);
+
+                if (initialPos != finalPos || initialEnd != finalEnd)
+                {
+                    // Element already at final position - just add command for undo/redo
+                    commandManager.AddExecutedCommand(new ResizeLineCommand(line, initialPos, initialEnd, finalPos, finalEnd));
+                    anyMoved = true;
+                }
+            }
+            else
+            {
+                // Regular element - get current (final) position
+                double finalLeft = Canvas.GetLeft(element);
+                double finalTop = Canvas.GetTop(element);
+                if (double.IsNaN(finalLeft)) finalLeft = 0;
+                if (double.IsNaN(finalTop)) finalTop = 0;
+                Point finalPos = new Point(finalLeft, finalTop);
+
+                if (initialPos != finalPos)
+                {
+                    // Element already at final position - just add command for undo/redo
+                    commandManager.AddExecutedCommand(new MoveElementCommand(element, initialPos, finalPos));
+                    anyMoved = true;
+
+                    // Update CanvasElement coordinates for Line/Arrow if needed
+                    UpdateLineArrowCanvasElement(element);
+                }
+            }
+        }
+
+        if (anyMoved)
+        {
+            UpdateUndoRedoButtons();
+            UpdatePropertiesPanel();
+            isDirty = true;
+        }
     }
 
     /// <summary>
@@ -711,6 +1480,8 @@ public partial class MainWindow : Window
 
         designCanvas.Children.Clear();
         SelectElement(null);
+        // Clear Layers panel
+        Layers.Clear();
         currentFilePath = null;
         isDirty = false;
         commandManager.Clear();
@@ -1019,6 +1790,9 @@ public partial class MainWindow : Window
                 RegisterElementControlForLoadedElement(uiElement, element);
             }
         );
+
+        // Sync Layers panel from loaded Canvas
+        SyncLayersFromCanvas();
 
         isDirty = false;
     }
@@ -1924,6 +2698,9 @@ public partial class MainWindow : Window
         // Unregister element control before deletion
         UnregisterElementControl(elementToDelete);
 
+        // Remove from Layers panel
+        RemoveLayerForElement(elementToDelete);
+
         commandManager.ExecuteCommand(new DeleteElementCommand(elementToDelete, designCanvas, index));
         UpdateUndoRedoButtons();
         isDirty = true;
@@ -1932,46 +2709,283 @@ public partial class MainWindow : Window
     // Alignment commands
     private void AlignLeft_Click(object sender, RoutedEventArgs e)
     {
-        if (selectedElement == null) return;
-        MoveElementTo(selectedElement, 0, null);
+        if (_selectedElements.Count > 1)
+        {
+            // Multi-selection: align to leftmost element's left edge
+            double minLeft = double.MaxValue;
+            foreach (var element in _selectedElements)
+            {
+                var bounds = GetElementBounds(element);
+                if (bounds.Left < minLeft) minLeft = bounds.Left;
+            }
+            AlignElementsTo(el => (minLeft, null));
+        }
+        else if (selectedElement != null)
+        {
+            // Single element: align to canvas edge
+            MoveElementTo(selectedElement, 0, null);
+        }
     }
 
     private void AlignRight_Click(object sender, RoutedEventArgs e)
     {
-        if (selectedElement == null || selectedElement is not FrameworkElement fe) return;
-        MoveElementTo(selectedElement, designCanvas.ActualWidth - fe.ActualWidth, null);
+        if (_selectedElements.Count > 1)
+        {
+            // Multi-selection: align to rightmost element's right edge
+            double maxRight = double.MinValue;
+            foreach (var element in _selectedElements)
+            {
+                var bounds = GetElementBounds(element);
+                if (bounds.Right > maxRight) maxRight = bounds.Right;
+            }
+            AlignElementsTo(el =>
+            {
+                var bounds = GetElementBounds(el);
+                return (maxRight - bounds.Width, null);
+            });
+        }
+        else if (selectedElement != null && selectedElement is FrameworkElement fe)
+        {
+            MoveElementTo(selectedElement, designCanvas.ActualWidth - fe.ActualWidth, null);
+        }
     }
 
     private void AlignTop_Click(object sender, RoutedEventArgs e)
     {
-        if (selectedElement == null) return;
-        MoveElementTo(selectedElement, null, 0);
+        if (_selectedElements.Count > 1)
+        {
+            // Multi-selection: align to topmost element's top edge
+            double minTop = double.MaxValue;
+            foreach (var element in _selectedElements)
+            {
+                var bounds = GetElementBounds(element);
+                if (bounds.Top < minTop) minTop = bounds.Top;
+            }
+            AlignElementsTo(el => (null, minTop));
+        }
+        else if (selectedElement != null)
+        {
+            MoveElementTo(selectedElement, null, 0);
+        }
     }
 
     private void AlignBottom_Click(object sender, RoutedEventArgs e)
     {
-        if (selectedElement == null || selectedElement is not FrameworkElement fe) return;
-        MoveElementTo(selectedElement, null, designCanvas.ActualHeight - fe.ActualHeight);
+        if (_selectedElements.Count > 1)
+        {
+            // Multi-selection: align to bottommost element's bottom edge
+            double maxBottom = double.MinValue;
+            foreach (var element in _selectedElements)
+            {
+                var bounds = GetElementBounds(element);
+                if (bounds.Bottom > maxBottom) maxBottom = bounds.Bottom;
+            }
+            AlignElementsTo(el =>
+            {
+                var bounds = GetElementBounds(el);
+                return (null, maxBottom - bounds.Height);
+            });
+        }
+        else if (selectedElement != null && selectedElement is FrameworkElement fe)
+        {
+            MoveElementTo(selectedElement, null, designCanvas.ActualHeight - fe.ActualHeight);
+        }
     }
 
     private void AlignCenterH_Click(object sender, RoutedEventArgs e)
     {
-        if (selectedElement == null || selectedElement is not FrameworkElement fe) return;
-        MoveElementTo(selectedElement, (designCanvas.ActualWidth - fe.ActualWidth) / 2, null);
+        if (_selectedElements.Count > 1)
+        {
+            // Multi-selection: align to horizontal center of bounding box
+            double minLeft = double.MaxValue;
+            double maxRight = double.MinValue;
+            foreach (var element in _selectedElements)
+            {
+                var bounds = GetElementBounds(element);
+                if (bounds.Left < minLeft) minLeft = bounds.Left;
+                if (bounds.Right > maxRight) maxRight = bounds.Right;
+            }
+            double centerX = (minLeft + maxRight) / 2;
+            AlignElementsTo(el =>
+            {
+                var bounds = GetElementBounds(el);
+                return (centerX - bounds.Width / 2, null);
+            });
+        }
+        else if (selectedElement != null && selectedElement is FrameworkElement fe)
+        {
+            MoveElementTo(selectedElement, (designCanvas.ActualWidth - fe.ActualWidth) / 2, null);
+        }
     }
 
     private void AlignCenterV_Click(object sender, RoutedEventArgs e)
     {
-        if (selectedElement == null || selectedElement is not FrameworkElement fe) return;
-        MoveElementTo(selectedElement, null, (designCanvas.ActualHeight - fe.ActualHeight) / 2);
+        if (_selectedElements.Count > 1)
+        {
+            // Multi-selection: align to vertical center of bounding box
+            double minTop = double.MaxValue;
+            double maxBottom = double.MinValue;
+            foreach (var element in _selectedElements)
+            {
+                var bounds = GetElementBounds(element);
+                if (bounds.Top < minTop) minTop = bounds.Top;
+                if (bounds.Bottom > maxBottom) maxBottom = bounds.Bottom;
+            }
+            double centerY = (minTop + maxBottom) / 2;
+            AlignElementsTo(el =>
+            {
+                var bounds = GetElementBounds(el);
+                return (null, centerY - bounds.Height / 2);
+            });
+        }
+        else if (selectedElement != null && selectedElement is FrameworkElement fe)
+        {
+            MoveElementTo(selectedElement, null, (designCanvas.ActualHeight - fe.ActualHeight) / 2);
+        }
     }
 
     private void AlignCenter_Click(object sender, RoutedEventArgs e)
     {
-        if (selectedElement == null || selectedElement is not FrameworkElement fe) return;
-        MoveElementTo(selectedElement,
-            (designCanvas.ActualWidth - fe.ActualWidth) / 2,
-            (designCanvas.ActualHeight - fe.ActualHeight) / 2);
+        if (_selectedElements.Count > 1)
+        {
+            // Multi-selection: center all elements on the canvas
+            AlignElementsTo(el =>
+            {
+                if (el is FrameworkElement fe)
+                    return ((designCanvas.ActualWidth - fe.ActualWidth) / 2, (designCanvas.ActualHeight - fe.ActualHeight) / 2);
+                return (null, null);
+            });
+        }
+        else if (selectedElement != null && selectedElement is FrameworkElement fe)
+        {
+            MoveElementTo(selectedElement,
+                (designCanvas.ActualWidth - fe.ActualWidth) / 2,
+                (designCanvas.ActualHeight - fe.ActualHeight) / 2);
+        }
+    }
+
+    /// <summary>
+    /// Aligns all selected elements using a position calculator function.
+    /// </summary>
+    /// <param name="positionCalculator">Function that takes an element and returns (newX, newY) - null means keep current</param>
+    private void AlignElementsTo(Func<UIElement, (double? x, double? y)> positionCalculator)
+    {
+        if (_selectedElements.Count == 0) return;
+
+        var moves = new List<Commands.ICommand>();
+
+        foreach (var element in _selectedElements)
+        {
+            var bounds = GetElementBounds(element);
+            double oldX = bounds.Left;
+            double oldY = bounds.Top;
+
+            var (newX, newY) = positionCalculator(element);
+            double finalX = newX ?? oldX;
+            double finalY = newY ?? oldY;
+
+            if (Math.Abs(finalX - oldX) > 0.01 || Math.Abs(finalY - oldY) > 0.01)
+            {
+                Canvas.SetLeft(element, finalX);
+                Canvas.SetTop(element, finalY);
+                moves.Add(new MoveElementCommand(element, new Point(oldX, oldY), new Point(finalX, finalY)));
+            }
+        }
+
+        if (moves.Count > 0)
+        {
+            commandManager.AddExecutedCommand(new CompositeCommand(moves));
+            UpdateUndoRedoButtons();
+            UpdatePropertiesPanel();
+            isDirty = true;
+        }
+    }
+
+    // Distribute commands
+    private void DistributeHorizontal_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedElements.Count < 3) return;
+
+        // Sort elements by their left edge position
+        var sortedElements = _selectedElements
+            .Select(el => (Element: el, Bounds: GetElementBounds(el)))
+            .OrderBy(x => x.Bounds.Left)
+            .ToList();
+
+        // Calculate spacing based on element centers
+        double firstCenter = sortedElements.First().Bounds.Left + sortedElements.First().Bounds.Width / 2;
+        double lastCenter = sortedElements.Last().Bounds.Left + sortedElements.Last().Bounds.Width / 2;
+        double totalSpan = lastCenter - firstCenter;
+        double spacing = totalSpan / (sortedElements.Count - 1);
+
+        var moves = new List<Commands.ICommand>();
+
+        // First and last elements stay in place, distribute middle elements
+        for (int i = 1; i < sortedElements.Count - 1; i++)
+        {
+            var item = sortedElements[i];
+            double oldX = item.Bounds.Left;
+            double oldY = item.Bounds.Top;
+            double newCenterX = firstCenter + (i * spacing);
+            double newLeft = newCenterX - item.Bounds.Width / 2;
+
+            if (Math.Abs(newLeft - oldX) > 0.01)
+            {
+                Canvas.SetLeft(item.Element, newLeft);
+                moves.Add(new MoveElementCommand(item.Element, new Point(oldX, oldY), new Point(newLeft, oldY)));
+            }
+        }
+
+        if (moves.Count > 0)
+        {
+            commandManager.AddExecutedCommand(new CompositeCommand(moves));
+            UpdateUndoRedoButtons();
+            UpdatePropertiesPanel();
+            isDirty = true;
+        }
+    }
+
+    private void DistributeVertical_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedElements.Count < 3) return;
+
+        // Sort elements by their top edge position
+        var sortedElements = _selectedElements
+            .Select(el => (Element: el, Bounds: GetElementBounds(el)))
+            .OrderBy(x => x.Bounds.Top)
+            .ToList();
+
+        // Calculate spacing based on element centers
+        double firstCenter = sortedElements.First().Bounds.Top + sortedElements.First().Bounds.Height / 2;
+        double lastCenter = sortedElements.Last().Bounds.Top + sortedElements.Last().Bounds.Height / 2;
+        double totalSpan = lastCenter - firstCenter;
+        double spacing = totalSpan / (sortedElements.Count - 1);
+
+        var moves = new List<Commands.ICommand>();
+
+        // First and last elements stay in place, distribute middle elements
+        for (int i = 1; i < sortedElements.Count - 1; i++)
+        {
+            var item = sortedElements[i];
+            double oldX = item.Bounds.Left;
+            double oldY = item.Bounds.Top;
+            double newCenterY = firstCenter + (i * spacing);
+            double newTop = newCenterY - item.Bounds.Height / 2;
+
+            if (Math.Abs(newTop - oldY) > 0.01)
+            {
+                Canvas.SetTop(item.Element, newTop);
+                moves.Add(new MoveElementCommand(item.Element, new Point(oldX, oldY), new Point(oldX, newTop)));
+            }
+        }
+
+        if (moves.Count > 0)
+        {
+            commandManager.AddExecutedCommand(new CompositeCommand(moves));
+            UpdateUndoRedoButtons();
+            UpdatePropertiesPanel();
+            isDirty = true;
+        }
     }
 
     // Z-Order commands
@@ -2029,6 +3043,312 @@ public partial class MainWindow : Window
         snapToGrid = !snapToGrid;
         menuSnapToGrid.IsChecked = snapToGrid;
     }
+
+    private void SnapToElements_Click(object sender, RoutedEventArgs e)
+    {
+        snapToElements = !snapToElements;
+        menuSnapToElements.IsChecked = snapToElements;
+    }
+
+    #region Snap-to-Element Guidelines
+
+    /// <summary>
+    /// Initializes the snap-to-element guideline Line objects.
+    /// </summary>
+    private void InitializeSnapGuidelines()
+    {
+        _verticalSnapGuideline = new Line
+        {
+            Stroke = new SolidColorBrush(Color.FromRgb(255, 0, 128)), // Magenta
+            StrokeThickness = 1,
+            StrokeDashArray = new DoubleCollection { 4, 4 },
+            IsHitTestVisible = false,
+            Visibility = Visibility.Collapsed
+        };
+        Panel.SetZIndex(_verticalSnapGuideline, int.MaxValue);
+        designCanvas.Children.Add(_verticalSnapGuideline);
+
+        _horizontalSnapGuideline = new Line
+        {
+            Stroke = new SolidColorBrush(Color.FromRgb(255, 0, 128)), // Magenta
+            StrokeThickness = 1,
+            StrokeDashArray = new DoubleCollection { 4, 4 },
+            IsHitTestVisible = false,
+            Visibility = Visibility.Collapsed
+        };
+        Panel.SetZIndex(_horizontalSnapGuideline, int.MaxValue);
+        designCanvas.Children.Add(_horizontalSnapGuideline);
+    }
+
+    /// <summary>
+    /// Shows a vertical snap guideline at the specified X coordinate.
+    /// </summary>
+    private void ShowVerticalSnapGuideline(double x)
+    {
+        if (_verticalSnapGuideline == null) return;
+        _verticalSnapGuideline.X1 = x;
+        _verticalSnapGuideline.X2 = x;
+        _verticalSnapGuideline.Y1 = 0;
+        _verticalSnapGuideline.Y2 = designCanvas.ActualHeight;
+        _verticalSnapGuideline.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>
+    /// Shows a horizontal snap guideline at the specified Y coordinate.
+    /// </summary>
+    private void ShowHorizontalSnapGuideline(double y)
+    {
+        if (_horizontalSnapGuideline == null) return;
+        _horizontalSnapGuideline.X1 = 0;
+        _horizontalSnapGuideline.X2 = designCanvas.ActualWidth;
+        _horizontalSnapGuideline.Y1 = y;
+        _horizontalSnapGuideline.Y2 = y;
+        _horizontalSnapGuideline.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>
+    /// Hides all snap guidelines.
+    /// </summary>
+    private void HideSnapGuidelines()
+    {
+        if (_verticalSnapGuideline != null)
+            _verticalSnapGuideline.Visibility = Visibility.Collapsed;
+        if (_horizontalSnapGuideline != null)
+            _horizontalSnapGuideline.Visibility = Visibility.Collapsed;
+    }
+
+    /// <summary>
+    /// Gets all snap points (X and Y coordinates) from elements, excluding the specified element and selected elements.
+    /// </summary>
+    private (List<double> xPoints, List<double> yPoints) GetAllSnapPoints(UIElement excludeElement)
+    {
+        var xPoints = new List<double>();
+        var yPoints = new List<double>();
+
+        foreach (UIElement child in designCanvas.Children)
+        {
+            if (child == excludeElement) continue;
+            if (child == _verticalSnapGuideline || child == _horizontalSnapGuideline) continue;
+            if (_selectedElements.Contains(child)) continue;
+
+            var bounds = GetElementBounds(child);
+            if (bounds == Rect.Empty) continue;
+
+            // X-Snap-Punkte (vertikale Linien)
+            xPoints.Add(bounds.Left);
+            xPoints.Add(bounds.Left + bounds.Width / 2);
+            xPoints.Add(bounds.Right);
+
+            // Y-Snap-Punkte (horizontale Linien)
+            yPoints.Add(bounds.Top);
+            yPoints.Add(bounds.Top + bounds.Height / 2);
+            yPoints.Add(bounds.Bottom);
+        }
+
+        return (xPoints, yPoints);
+    }
+
+    /// <summary>
+    /// Gets all snap points excluding all currently selected elements.
+    /// </summary>
+    private (List<double> xPoints, List<double> yPoints) GetAllSnapPointsExcludingSelection()
+    {
+        var xPoints = new List<double>();
+        var yPoints = new List<double>();
+
+        foreach (UIElement child in designCanvas.Children)
+        {
+            if (_selectedElements.Contains(child)) continue;
+            if (child == _verticalSnapGuideline || child == _horizontalSnapGuideline) continue;
+
+            var bounds = GetElementBounds(child);
+            if (bounds == Rect.Empty) continue;
+
+            xPoints.Add(bounds.Left);
+            xPoints.Add(bounds.Left + bounds.Width / 2);
+            xPoints.Add(bounds.Right);
+
+            yPoints.Add(bounds.Top);
+            yPoints.Add(bounds.Top + bounds.Height / 2);
+            yPoints.Add(bounds.Bottom);
+        }
+
+        return (xPoints, yPoints);
+    }
+
+    /// <summary>
+    /// Finds the nearest snap point within SNAP_THRESHOLD_PIXELS distance.
+    /// </summary>
+    private double? FindNearestSnapPoint(double position, List<double> snapPoints)
+    {
+        double closestDistance = double.MaxValue;
+        double? closestSnapPoint = null;
+
+        foreach (var snapPoint in snapPoints)
+        {
+            double distance = Math.Abs(position - snapPoint);
+            if (distance < SNAP_THRESHOLD_PIXELS && distance < closestDistance)
+            {
+                closestDistance = distance;
+                closestSnapPoint = snapPoint;
+            }
+        }
+
+        return closestSnapPoint;
+    }
+
+    /// <summary>
+    /// Calculates snap position for an element based on nearby elements.
+    /// Returns adjusted position and guideline positions.
+    /// </summary>
+    private (double newLeft, double newTop, double? guideX, double? guideY) CalculateElementSnap(
+        double currentLeft, double currentTop, double width, double height, UIElement excludeElement)
+    {
+        if (!snapToElements)
+            return (currentLeft, currentTop, null, null);
+
+        var (xPoints, yPoints) = GetAllSnapPoints(excludeElement);
+
+        double newLeft = currentLeft;
+        double newTop = currentTop;
+        double? guideX = null;
+        double? guideY = null;
+
+        // Element-Snap-Punkte
+        double elemLeft = currentLeft;
+        double elemCenterX = currentLeft + width / 2;
+        double elemRight = currentLeft + width;
+
+        double elemTop = currentTop;
+        double elemCenterY = currentTop + height / 2;
+        double elemBottom = currentTop + height;
+
+        // X-Snap prüfen (linke Kante, Mitte, rechte Kante)
+        var snapLeft = FindNearestSnapPoint(elemLeft, xPoints);
+        var snapCenterX = FindNearestSnapPoint(elemCenterX, xPoints);
+        var snapRight = FindNearestSnapPoint(elemRight, xPoints);
+
+        // Nächsten X-Snap wählen
+        double bestXDistance = double.MaxValue;
+
+        if (snapLeft.HasValue)
+        {
+            double dist = Math.Abs(elemLeft - snapLeft.Value);
+            if (dist < bestXDistance) { bestXDistance = dist; newLeft = snapLeft.Value; guideX = snapLeft.Value; }
+        }
+        if (snapCenterX.HasValue)
+        {
+            double dist = Math.Abs(elemCenterX - snapCenterX.Value);
+            if (dist < bestXDistance) { bestXDistance = dist; newLeft = snapCenterX.Value - width / 2; guideX = snapCenterX.Value; }
+        }
+        if (snapRight.HasValue)
+        {
+            double dist = Math.Abs(elemRight - snapRight.Value);
+            if (dist < bestXDistance) { bestXDistance = dist; newLeft = snapRight.Value - width; guideX = snapRight.Value; }
+        }
+
+        // Y-Snap prüfen (obere Kante, Mitte, untere Kante)
+        var snapTop = FindNearestSnapPoint(elemTop, yPoints);
+        var snapCenterY = FindNearestSnapPoint(elemCenterY, yPoints);
+        var snapBottom = FindNearestSnapPoint(elemBottom, yPoints);
+
+        // Nächsten Y-Snap wählen
+        double bestYDistance = double.MaxValue;
+
+        if (snapTop.HasValue)
+        {
+            double dist = Math.Abs(elemTop - snapTop.Value);
+            if (dist < bestYDistance) { bestYDistance = dist; newTop = snapTop.Value; guideY = snapTop.Value; }
+        }
+        if (snapCenterY.HasValue)
+        {
+            double dist = Math.Abs(elemCenterY - snapCenterY.Value);
+            if (dist < bestYDistance) { bestYDistance = dist; newTop = snapCenterY.Value - height / 2; guideY = snapCenterY.Value; }
+        }
+        if (snapBottom.HasValue)
+        {
+            double dist = Math.Abs(elemBottom - snapBottom.Value);
+            if (dist < bestYDistance) { bestYDistance = dist; newTop = snapBottom.Value - height; guideY = snapBottom.Value; }
+        }
+
+        return (newLeft, newTop, guideX, guideY);
+    }
+
+    /// <summary>
+    /// Calculates snap position for a selection bounding box.
+    /// </summary>
+    private (double newLeft, double newTop, double? guideX, double? guideY) CalculateElementSnapForSelection(
+        double currentLeft, double currentTop, double width, double height)
+    {
+        if (!snapToElements)
+            return (currentLeft, currentTop, null, null);
+
+        var (xPoints, yPoints) = GetAllSnapPointsExcludingSelection();
+
+        double newLeft = currentLeft;
+        double newTop = currentTop;
+        double? guideX = null;
+        double? guideY = null;
+
+        // Selection Bounding-Box Snap-Punkte
+        double selLeft = currentLeft;
+        double selCenterX = currentLeft + width / 2;
+        double selRight = currentLeft + width;
+
+        double selTop = currentTop;
+        double selCenterY = currentTop + height / 2;
+        double selBottom = currentTop + height;
+
+        // X-Snap prüfen
+        var snapLeft = FindNearestSnapPoint(selLeft, xPoints);
+        var snapCenterX = FindNearestSnapPoint(selCenterX, xPoints);
+        var snapRight = FindNearestSnapPoint(selRight, xPoints);
+
+        double bestXDistance = double.MaxValue;
+
+        if (snapLeft.HasValue)
+        {
+            double dist = Math.Abs(selLeft - snapLeft.Value);
+            if (dist < bestXDistance) { bestXDistance = dist; newLeft = snapLeft.Value; guideX = snapLeft.Value; }
+        }
+        if (snapCenterX.HasValue)
+        {
+            double dist = Math.Abs(selCenterX - snapCenterX.Value);
+            if (dist < bestXDistance) { bestXDistance = dist; newLeft = snapCenterX.Value - width / 2; guideX = snapCenterX.Value; }
+        }
+        if (snapRight.HasValue)
+        {
+            double dist = Math.Abs(selRight - snapRight.Value);
+            if (dist < bestXDistance) { bestXDistance = dist; newLeft = snapRight.Value - width; guideX = snapRight.Value; }
+        }
+
+        // Y-Snap prüfen
+        var snapTop = FindNearestSnapPoint(selTop, yPoints);
+        var snapCenterY = FindNearestSnapPoint(selCenterY, yPoints);
+        var snapBottom = FindNearestSnapPoint(selBottom, yPoints);
+
+        double bestYDistance = double.MaxValue;
+
+        if (snapTop.HasValue)
+        {
+            double dist = Math.Abs(selTop - snapTop.Value);
+            if (dist < bestYDistance) { bestYDistance = dist; newTop = snapTop.Value; guideY = snapTop.Value; }
+        }
+        if (snapCenterY.HasValue)
+        {
+            double dist = Math.Abs(selCenterY - snapCenterY.Value);
+            if (dist < bestYDistance) { bestYDistance = dist; newTop = snapCenterY.Value - height / 2; guideY = snapCenterY.Value; }
+        }
+        if (snapBottom.HasValue)
+        {
+            double dist = Math.Abs(selBottom - snapBottom.Value);
+            if (dist < bestYDistance) { bestYDistance = dist; newTop = snapBottom.Value - height; guideY = snapBottom.Value; }
+        }
+
+        return (newLeft, newTop, guideX, guideY);
+    }
+
+    #endregion
 
     private void GridSize5_Click(object sender, RoutedEventArgs e)
     {

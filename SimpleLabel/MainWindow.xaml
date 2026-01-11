@@ -10,12 +10,24 @@
         PreviewKeyDown="Window_PreviewKeyDown">
     <Grid>
         <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="200" MinWidth="100" MaxWidth="400" />
+            <ColumnDefinition Width="Auto" />
             <ColumnDefinition Width="*" />
             <ColumnDefinition Width="250" />
         </Grid.ColumnDefinitions>
 
+        <!-- Left: Layers panel -->
+        <controls:LayersPanel x:Name="layersPanel" Grid.Column="0" />
+
+        <!-- GridSplitter between Layers and Canvas -->
+        <GridSplitter Grid.Column="1"
+                      Width="5"
+                      HorizontalAlignment="Center"
+                      VerticalAlignment="Stretch"
+                      Background="#CCCCCC" />
+
         <!-- Main area: Canvas and menus -->
-        <DockPanel Grid.Column="0">
+        <DockPanel Grid.Column="2">
             <!-- Top: Menu bar -->
             <Menu DockPanel.Dock="Top">
                 <MenuItem Header="_File">
@@ -45,6 +57,9 @@
                         <MenuItem Header="Unten ausrichten" Click="AlignBottom_Click" />
                         <Separator />
                         <MenuItem Header="Im Canvas zentrieren" Click="AlignCenter_Click" />
+                        <Separator />
+                        <MenuItem Header="Horizontal verteilen" Click="DistributeHorizontal_Click" />
+                        <MenuItem Header="Vertikal verteilen" Click="DistributeVertical_Click" />
                     </MenuItem>
                     <Separator />
                     <MenuItem Header="In den _Vordergrund" Click="BringToFront_Click" InputGestureText="Page Up" />
@@ -53,6 +68,7 @@
                     <MenuItem Header="In den _Hintergrund" Click="SendToBack_Click" InputGestureText="Page Down" />
                     <Separator />
                     <MenuItem x:Name="menuSnapToGrid" Header="_Raster einrasten" IsCheckable="True" Click="SnapToGrid_Click" InputGestureText="Ctrl+G" />
+                    <MenuItem x:Name="menuSnapToElements" Header="An _Elementen einrasten" IsCheckable="True" Click="SnapToElements_Click" />
                     <MenuItem Header="Rastergröße">
                         <MenuItem x:Name="menuGridSize5" Header="5 mm" Click="GridSize5_Click" IsChecked="True" />
                         <MenuItem x:Name="menuGridSize10" Header="10 mm" Click="GridSize10_Click" />
@@ -114,7 +130,9 @@
                             Width="378"
                             Height="567"
                             ClipToBounds="True"
-                            MouseLeftButtonDown="Canvas_MouseDown">
+                            MouseLeftButtonDown="Canvas_MouseDown"
+                            MouseMove="Canvas_MouseMove"
+                            MouseLeftButtonUp="Canvas_MouseUp">
                         <Canvas.LayoutTransform>
                             <ScaleTransform x:Name="canvasScaleTransform" ScaleX="1.0" ScaleY="1.0" />
                         </Canvas.LayoutTransform>
@@ -125,7 +143,7 @@
         </DockPanel>
 
         <!-- Right: Properties panel -->
-        <DockPanel Grid.Column="1" Background="#F0F0F0">
+        <DockPanel Grid.Column="3" Background="#F0F0F0">
             <TextBlock DockPanel.Dock="Top"
                        Text="Properties"
                        FontWeight="Bold"
