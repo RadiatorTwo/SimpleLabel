@@ -18,6 +18,7 @@ using SimpleLabel.Commands;
 using SimpleLabel.Controls;
 using SimpleLabel.Controllers;
 using SimpleLabel.Services;
+using SimpleLabel.Utilities;
 using WpfColor = System.Windows.Media.Color;
 using FormsColor = System.Drawing.Color;
 
@@ -34,6 +35,11 @@ public partial class MainWindow : Window
     private Point dragInitialPosition; // For undo/redo - initial position before drag
     private Point dragInitialEndPosition; // For Line elements - stores X2/Y2
     private UIElement? selectedElement = null;
+
+    // Clipboard for copy/paste
+    private UIElement? _clipboardElement = null;
+    private double _clipboardLeft = 0;
+    private double _clipboardTop = 0;
 
     // Multi-selection support
     private readonly HashSet<UIElement> _selectedElements = new();
@@ -402,6 +408,28 @@ public partial class MainWindow : Window
 
         // Update properties panel
         UpdatePropertiesPanel();
+    }
+
+    /// <summary>
+    /// Selects all elements on the canvas.
+    /// </summary>
+    private void SelectAllElements()
+    {
+        ClearSelection();
+        foreach (UIElement child in designCanvas.Children)
+        {
+            if (child is FrameworkElement)
+            {
+                _selectedElements.Add(child);
+                AddAdornerToElement(child);
+            }
+        }
+        if (_selectedElements.Count > 0)
+        {
+            selectedElement = _selectedElements.Last();
+            SyncLayersPanelSelection();
+            UpdatePropertiesPanel();
+        }
     }
 
     /// <summary>
@@ -1594,6 +1622,18 @@ public partial class MainWindow : Window
         Close();
     }
 
+    private void ThemeSystem_Click(object sender, RoutedEventArgs e) => SetThemeChecked(AppTheme.System);
+    private void ThemeLight_Click(object sender, RoutedEventArgs e) => SetThemeChecked(AppTheme.Light);
+    private void ThemeDark_Click(object sender, RoutedEventArgs e) => SetThemeChecked(AppTheme.Dark);
+
+    private void SetThemeChecked(AppTheme mode)
+    {
+        menuThemeSystem.IsChecked = mode == AppTheme.System;
+        menuThemeLight.IsChecked = mode == AppTheme.Light;
+        menuThemeDark.IsChecked = mode == AppTheme.Dark;
+        ThemeManager.SetTheme(mode);
+    }
+
     private void Print_Click(object sender, RoutedEventArgs e)
     {
         var printDialog = new PrintDialog();
@@ -1760,6 +1800,74 @@ public partial class MainWindow : Window
                 MoveElementByOffset(selectedElement, dx, dy);
                 e.Handled = true;
             }
+        }
+        // Handle Escape for Deselect
+        else if (e.Key == Key.Escape)
+        {
+            var focusedElement = Keyboard.FocusedElement as DependencyObject;
+            if (focusedElement is TextBox || focusedElement is ComboBox)
+                return;
+
+            ClearSelection();
+            e.Handled = true;
+        }
+        // Handle Ctrl+A for Select All
+        else if (e.Key == Key.A && Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            var focusedElement = Keyboard.FocusedElement as DependencyObject;
+            if (focusedElement is TextBox || focusedElement is ComboBox)
+                return;
+
+            SelectAllElements();
+            e.Handled = true;
+        }
+        // Handle Ctrl+C for Copy
+        else if (e.Key == Key.C && Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            var focusedElement = Keyboard.FocusedElement as DependencyObject;
+            if (focusedElement is TextBox || focusedElement is ComboBox)
+                return;
+
+            Copy_Click(this, new RoutedEventArgs());
+            e.Handled = true;
+        }
+        // Handle Ctrl+V for Paste
+        else if (e.Key == Key.V && Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            var focusedElement = Keyboard.FocusedElement as DependencyObject;
+            if (focusedElement is TextBox || focusedElement is ComboBox)
+                return;
+
+            Paste_Click(this, new RoutedEventArgs());
+            e.Handled = true;
+        }
+        // Handle Ctrl+X for Cut
+        else if (e.Key == Key.X && Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            var focusedElement = Keyboard.FocusedElement as DependencyObject;
+            if (focusedElement is TextBox || focusedElement is ComboBox)
+                return;
+
+            Cut_Click(this, new RoutedEventArgs());
+            e.Handled = true;
+        }
+        // Handle Ctrl++ for Zoom In (both OemPlus and Add for numpad)
+        else if ((e.Key == Key.OemPlus || e.Key == Key.Add) && Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            ZoomIn_Click(this, new RoutedEventArgs());
+            e.Handled = true;
+        }
+        // Handle Ctrl+- for Zoom Out (both OemMinus and Subtract for numpad)
+        else if ((e.Key == Key.OemMinus || e.Key == Key.Subtract) && Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            ZoomOut_Click(this, new RoutedEventArgs());
+            e.Handled = true;
+        }
+        // Handle Ctrl+0 for Zoom Reset
+        else if ((e.Key == Key.D0 || e.Key == Key.NumPad0) && Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            ZoomReset_Click(this, new RoutedEventArgs());
+            e.Handled = true;
         }
     }
 
@@ -2683,6 +2791,48 @@ public partial class MainWindow : Window
             // Select the new element
             SelectElement(newElement);
         }
+    }
+
+    // Copy selected element to internal clipboard
+    private void Copy_Click(object sender, RoutedEventArgs e)
+    {
+        if (selectedElement == null)
+            return;
+
+        _clipboardElement = selectedElement;
+        _clipboardLeft = Canvas.GetLeft(selectedElement);
+        _clipboardTop = Canvas.GetTop(selectedElement);
+    }
+
+    // Paste element from internal clipboard
+    private void Paste_Click(object sender, RoutedEventArgs e)
+    {
+        if (_clipboardElement == null)
+            return;
+
+        // Temporarily select clipboard element to reuse Duplicate logic
+        var previousSelection = selectedElement;
+        selectedElement = _clipboardElement;
+
+        Duplicate_Click(sender, e);
+
+        // The newly created element is now selected, which is correct behavior
+    }
+
+    // Cut = Copy + Delete
+    private void Cut_Click(object sender, RoutedEventArgs e)
+    {
+        if (selectedElement == null)
+            return;
+
+        Copy_Click(sender, e);
+        Delete_Click(sender, e);
+    }
+
+    // Select all elements (for menu item)
+    private void SelectAll_Click(object sender, RoutedEventArgs e)
+    {
+        SelectAllElements();
     }
 
     // Delete selected element

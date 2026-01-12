@@ -1,0 +1,31 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Panel Backgrounds -->
+    <SolidColorBrush x:Key="PanelBackgroundBrush" Color="#2D2D30"/>
+    <SolidColorBrush x:Key="HeaderBackgroundBrush" Color="#3E3E42"/>
+    <SolidColorBrush x:Key="SplitterBackgroundBrush" Color="#3E3E42"/>
+
+    <!-- Canvas Area -->
+    <SolidColorBrush x:Key="CanvasBackgroundBrush" Color="#1E1E1E"/>
+    <SolidColorBrush x:Key="CanvasAreaBackgroundBrush" Color="#252526"/>
+
+    <!-- Accents -->
+    <SolidColorBrush x:Key="AccentBrush" Color="#007ACC"/>
+
+    <!-- Borders -->
+    <SolidColorBrush x:Key="BorderBrush" Color="#CCCCCC"/>
+
+    <!-- Icons & Button Hover -->
+    <SolidColorBrush x:Key="IconBrush" Color="#CCCCCC"/>
+    <SolidColorBrush x:Key="ButtonHoverBackgroundBrush" Color="#3E3E42"/>
+    <SolidColorBrush x:Key="MenuHoverBackgroundBrush" Color="#505050"/>
+
+    <!-- Control Styling -->
+    <SolidColorBrush x:Key="ControlBackgroundBrush" Color="#3E3E42"/>
+    <SolidColorBrush x:Key="ControlBorderBrush" Color="#555555"/>
+    <SolidColorBrush x:Key="ControlForegroundBrush" Color="#F0F0F0"/>
+    <SolidColorBrush x:Key="ControlDisabledBackgroundBrush" Color="#2D2D30"/>
+    <SolidColorBrush x:Key="GridSplitterHoverBrush" Color="#007ACC"/>
+    <SolidColorBrush x:Key="SliderTrackBrush" Color="#555555"/>
+    <SolidColorBrush x:Key="SliderThumbBrush" Color="#999999"/>
+</ResourceDictionary>

@@ -5,14 +5,14 @@
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              mc:Ignorable="d"
              d:DesignHeight="400" d:DesignWidth="200"
-             Background="#F0F0F0">
+             Background="{DynamicResource PanelBackgroundBrush}">
     <DockPanel>
         <TextBlock DockPanel.Dock="Top"
                    Text="Layers"
                    FontWeight="Bold"
                    FontSize="14"
                    Padding="10"
-                   Background="#E0E0E0" />
+                   Background="{DynamicResource HeaderBackgroundBrush}" />
 
         <Grid>
             <ListBox x:Name="layersList"
@@ -45,7 +45,7 @@
             <Canvas x:Name="dropIndicatorCanvas" IsHitTestVisible="False">
                 <Border x:Name="dropIndicator"
                         Height="3"
-                        Background="#0078D7"
+                        Background="{DynamicResource AccentBrush}"
                         Visibility="Collapsed"
                         CornerRadius="1.5">
                     <Border.Effect>
